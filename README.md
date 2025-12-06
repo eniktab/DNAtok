@@ -31,12 +31,12 @@ DNATok provides **34-244x speedup** over standard tokenization for DNA foundatio
 
 ### Core Capabilities
 
-- **🚀 GPU-Accelerated**: Device-side lookup tables (LUTs) eliminate CPU→GPU tokenization bottleneck
-- **🧬 K-mer Fast Path**: Automatic detection and optimization for k-mer tokenizers (k=3-6)
-- **🔄 Runtime Discovery**: Builds ASCII/k-mer LUTs from any tokenizer at runtime—no manual configuration
-- **⚡ Pipelined Execution**: Overlaps H2D copies with embedding compute using CUDA streams
-- **🛡️ Robust Fallback**: Gracefully handles edge cases by falling back to tokenizer when needed
-- **📊 Auto-Tuning**: Dynamically adjusts micro-batch sizes to avoid 32-bit index overflow and OOM
+- **GPU-Accelerated**: Device-side lookup tables (LUTs) eliminate CPU→GPU tokenization bottleneck
+- **K-mer Fast Path**: Automatic detection and optimization for k-mer tokenizers (k=3-6)
+- **Runtime Discovery**: Builds ASCII/k-mer LUTs from any tokenizer at runtime—no manual configuration
+- **Pipelined Execution**: Overlaps H2D copies with embedding compute using CUDA streams
+- **Robust Fallback**: Gracefully handles edge cases by falling back to tokenizer when needed
+- **Auto-Tuning**: Dynamically adjusts micro-batch sizes to avoid 32-bit index overflow and OOM
 
 ### Encoding Paths
 
@@ -242,13 +242,13 @@ dna_tok.discover()
 DNATok has been tested and validated with:
 
 ### Character-Level Tokenizers
-- ✅ **HyenaDNA** (all sizes: tiny-1k to large-1m)
-- ✅ **Custom DNA vocabularies** (ACGTN)
+- **HyenaDNA** (all sizes: tiny-1k to large-1m)
+- **Custom DNA vocabularies** (ACGTN)
 
 ### K-mer Tokenizers
-- ✅ **Nucleotide Transformer** (all variants: 500M-2.5B, k=6)
-- ✅ **Evo2** (7B parameter model, k=6)
-- ✅ **Custom k-mer models** (k=3,4,5,6)
+- **Nucleotide Transformer** (all variants: 500M-2.5B, k=6)
+- **Evo2** (7B parameter model, k=6)
+- **Custom k-mer models** (k=3,4,5,6)
 
 ### Compatibility
 
@@ -353,11 +353,11 @@ pytest tests/ -v
 
 ### Test Coverage
 
-- ✅ **Correctness**: DNATok vs baseline tokenizer equivalence
-- ✅ **Path Consistency**: Bytes path matches IDs path
-- ✅ **Fallback Behavior**: Graceful degradation on errors
-- ✅ **Edge Cases**: Mixed case, invalid chars, empty strings
-- ✅ **K-mer Handling**: K-mer detection and unsupported k-mer fallback
+- **Correctness**: DNATok vs baseline tokenizer equivalence
+- **Path Consistency**: Bytes path matches IDs path
+- **Fallback Behavior**: Graceful degradation on errors
+- **Edge Cases**: Mixed case, invalid chars, empty strings
+- **K-mer Handling**: K-mer detection and unsupported k-mer fallback
 
 ### Specific Test Suites
 
@@ -373,27 +373,11 @@ pytest tests/test_bytes_path_fallback.py -v
 pytest tests/test_kmer_bytes_fallback.py -v
 ```
 
-All 14 tests passing ✓
-
 ---
 
 ## Contributing
 
 We welcome contributions! Please follow these guidelines:
-
-### Development Setup
-
-```bash
-# Clone repository
-git clone https://github.com/yourusername/DNATok.git
-cd DNATok
-
-# Install in development mode
-pip install -e .
-
-# Install development dependencies
-pip install pytest black flake8 mypy
-```
 
 ### Code Standards
 
@@ -512,8 +496,4 @@ limitations under the License.
 
 - **Issues**: [GitHub Issues](https://github.com/yourusername/DNATok/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/yourusername/DNATok/discussions)
-- **Email**: [your.email@institution.edu]
-
----
-
-**⭐ If DNATok accelerates your genomic research, please star the repository!**
+- **Email**: eli.niktab@anu.edu
