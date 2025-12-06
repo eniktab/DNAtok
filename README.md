@@ -15,6 +15,7 @@ DNATok provides **34-244x speedup** over standard tokenization for DNA foundatio
 - [Features](#features)
 - [Performance](#performance)
 - [Installation](#installation)
+- [Examples](#examples)
 - [Quick Start](#quick-start)
 - [Usage](#usage)
 - [Supported Models](#supported-models)
@@ -103,6 +104,16 @@ Optional dependencies for examples:
 transformers>=4.30.0  # For Hugging Face models
 evo2                  # For Evo2 model support
 ```
+
+---
+
+## Examples
+
+- `examples/nt_transformer_demo.py`: Run Nucleotide Transformer end-to-end and benchmark DNATok vs. the baseline tokenizer
+- `examples/hyena_demo.py`: Demonstrate bytes-path acceleration for HyenaDNA character-level tokenization
+- `examples/evo2_demo.py`: Use the k-mer path with Evo2 and validate against the reference tokenizer
+
+See the `examples/` directory for usage and configuration details.
 
 ---
 
