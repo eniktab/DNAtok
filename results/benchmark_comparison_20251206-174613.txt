@@ -1,0 +1,211 @@
+================================================================================
+TOKENIZATION BENCHMARK RESULTS
+================================================================================
+
+
+Standard benchmark (4096 x 512) (B=4096, T=512)
+--------------------------------------------------------------------------------
+  Encode | DNATok (encode i64)              |  330,714,160 ± 72,427,548 tok/s
+  H2D    | DNATok (encode i64)              | 1,278,983,405 ± 131,154,839 tok/s
+  Encode | DNATok (staging i32)             |  359,142,099 ± 88,386,475 tok/s
+  H2D    | DNATok (staging i32)             | 1,433,918,153 ± 75,626,897 tok/s
+  Encode | DNATok (staging i64)             |  358,494,832 ± 56,116,136 tok/s
+  H2D    | DNATok (staging i64)             | 1,957,412,010 ± 101,444,093 tok/s
+  Encode | HF Rust (encode_batch)           |      601,123 ±    2,626 tok/s
+  H2D    | HF Rust (encode_batch)           |   22,066,148 ±  388,240 tok/s
+  Encode | HF Rust (robust adapter)         |      601,989 ±    4,014 tok/s
+  H2D    | HF Rust (robust adapter)         |   22,203,155 ±  629,046 tok/s
+  E2E    | Streaming baseline               |  572,083,809 ± 280,033,532 tok/s
+  E2E    | Streaming pipelined              |  701,105,569 ± 155,879,692 tok/s
+
+Large batch size (8192 x 512) (B=8192, T=512)
+--------------------------------------------------------------------------------
+  Encode | DNATok (encode i64)              |  267,186,362 ± 46,905,689 tok/s
+  H2D    | DNATok (encode i64)              | 2,165,041,105 ± 172,632,359 tok/s
+  Encode | DNATok (staging i32)             |  289,078,410 ± 2,296,897 tok/s
+  H2D    | DNATok (staging i32)             |  527,293,284 ± 22,300,071 tok/s
+  Encode | DNATok (staging i64)             |  280,435,012 ± 21,527,485 tok/s
+  H2D    | DNATok (staging i64)             | 2,459,643,245 ± 93,677,225 tok/s
+  Encode | HF Rust (encode_batch)           |      598,013 ±    4,855 tok/s
+  H2D    | HF Rust (encode_batch)           |   21,604,173 ±  153,803 tok/s
+  Encode | HF Rust (robust adapter)         |      600,733 ±    2,903 tok/s
+  H2D    | HF Rust (robust adapter)         |   21,884,843 ±  914,822 tok/s
+  E2E    | Streaming baseline               |  876,198,321 ± 35,060,289 tok/s
+  E2E    | Streaming pipelined              |  965,710,278 ± 11,328,302 tok/s
+
+Long sequences (2048 x 2048) (B=2048, T=2048)
+--------------------------------------------------------------------------------
+  Encode | DNATok (encode i64)              |   94,407,431 ± 15,989,104 tok/s
+  H2D    | DNATok (encode i64)              | 3,071,594,323 ± 275,712,516 tok/s
+  Encode | DNATok (staging i32)             |   79,161,628 ± 16,263,996 tok/s
+  H2D    | DNATok (staging i32)             |  154,446,767 ± 76,859,005 tok/s
+  Encode | DNATok (staging i64)             |  111,118,840 ± 32,664,076 tok/s
+  H2D    | DNATok (staging i64)             | 3,726,481,562 ± 525,187,039 tok/s
+  Encode | HF Rust (encode_batch)           |      591,258 ±   11,765 tok/s
+  H2D    | HF Rust (encode_batch)           |   20,580,979 ±  884,615 tok/s
+  Encode | HF Rust (robust adapter)         |      602,707 ±    1,023 tok/s
+  H2D    | HF Rust (robust adapter)         |   21,644,291 ±  156,948 tok/s
+  E2E    | Streaming baseline               |  706,239,124 ± 232,441,102 tok/s
+  E2E    | Streaming pipelined              |  989,055,956 ± 21,808,675 tok/s
+  Encode | DNATok (encode i64)              |   11,279,029 ± 4,960,098 tok/s
+  H2D    | DNATok (encode i64)              | 1,978,637,196 ± 197,004,262 tok/s
+  Encode | DNATok (staging i32)             |    5,454,112 ± 2,294,836 tok/s
+  H2D    | DNATok (staging i32)             |    7,357,554 ± 1,594,422 tok/s
+  Encode | DNATok (staging i64)             |   14,548,328 ± 5,101,246 tok/s
+  H2D    | DNATok (staging i64)             | 2,255,769,905 ± 159,569,838 tok/s
+  Encode | HF Rust (encode_batch)           |      577,692 ±   26,616 tok/s
+  H2D    | HF Rust (encode_batch)           |    6,953,863 ± 2,486,807 tok/s
+  Encode | HF Rust (robust adapter)         |      598,394 ±    2,842 tok/s
+  H2D    | HF Rust (robust adapter)         |   10,205,668 ±  279,552 tok/s
+  E2E    | Streaming baseline               |  344,355,644 ± 212,421,951 tok/s
+  E2E    | Streaming pipelined              |  242,718,149 ± 43,220,928 tok/s
+  Encode | DNATok (encode i64)              |   34,495,067 ± 1,500,796 tok/s
+  H2D    | DNATok (encode i64)              |  913,326,785 ± 40,386,820 tok/s
+  Encode | DNATok (staging i32)             |   17,492,944 ± 1,728,201 tok/s
+  H2D    | DNATok (staging i32)             |   19,300,717 ±   23,706 tok/s
+  Encode | DNATok (staging i64)             |   30,069,005 ± 8,164,762 tok/s
+  H2D    | DNATok (staging i64)             | 1,177,330,727 ± 72,421,758 tok/s
+  Encode | HF Rust (encode_batch)           |      597,545 ±    3,697 tok/s
+  H2D    | HF Rust (encode_batch)           |   16,189,540 ± 3,008,973 tok/s
+  Encode | HF Rust (robust adapter)         |      599,247 ±    1,904 tok/s
+  H2D    | HF Rust (robust adapter)         |   15,213,914 ± 1,706,718 tok/s
+  E2E    | Streaming baseline               |  393,441,969 ± 75,548,527 tok/s
+  E2E    | Streaming pipelined              |  360,777,987 ± 13,471,966 tok/s
+  Encode | DNATok (encode i64)              |   62,535,895 ± 3,882,426 tok/s
+  H2D    | DNATok (encode i64)              |  995,147,955 ± 54,016,304 tok/s
+  Encode | DNATok (staging i32)             |  181,692,702 ± 163,959,577 tok/s
+  H2D    | DNATok (staging i32)             |  863,318,411 ± 584,635,293 tok/s
+  Encode | DNATok (staging i64)             |   52,547,029 ± 9,353,416 tok/s
+  H2D    | DNATok (staging i64)             | 1,293,536,927 ± 105,538,698 tok/s
+  Encode | HF Rust (encode_batch)           |      596,011 ±    1,797 tok/s
+  H2D    | HF Rust (encode_batch)           |   18,584,664 ± 1,552,746 tok/s
+  Encode | HF Rust (robust adapter)         |      582,262 ±   21,090 tok/s
+  H2D    | HF Rust (robust adapter)         |   15,031,455 ± 1,981,635 tok/s
+  E2E    | Streaming baseline               |  459,930,520 ± 55,663,039 tok/s
+  E2E    | Streaming pipelined              |  396,738,958 ± 121,043,538 tok/s
+  Encode | DNATok (encode i64)              |  318,561,077 ± 82,543,835 tok/s
+  H2D    | DNATok (encode i64)              |  963,390,324 ± 47,773,996 tok/s
+  Encode | DNATok (staging i32)             |  391,929,502 ± 14,096,732 tok/s
+  H2D    | DNATok (staging i32)             |  815,155,673 ± 37,254,276 tok/s
+  Encode | DNATok (staging i64)             |  369,696,079 ± 21,977,519 tok/s
+  H2D    | DNATok (staging i64)             |  969,966,778 ± 20,754,705 tok/s
+  Encode | HF Rust (encode_batch)           |      599,738 ±    2,286 tok/s
+  H2D    | HF Rust (encode_batch)           |   22,582,276 ±  295,073 tok/s
+  Encode | HF Rust (robust adapter)         |      597,531 ±    1,644 tok/s
+  H2D    | HF Rust (robust adapter)         |   22,168,214 ±  332,488 tok/s
+  E2E    | Streaming baseline               |  558,496,649 ± 63,272,525 tok/s
+  E2E    | Streaming pipelined              |  522,307,931 ± 41,008,351 tok/s
+  Encode | DNATok (encode i64)              |  372,621,719 ± 3,266,723 tok/s
+  H2D    | DNATok (encode i64)              | 1,178,596,858 ± 36,258,186 tok/s
+  Encode | DNATok (staging i32)             |  332,810,877 ± 90,347,521 tok/s
+  H2D    | DNATok (staging i32)             | 1,159,419,145 ± 34,653,456 tok/s
+  Encode | DNATok (staging i64)             |  299,391,973 ± 63,253,191 tok/s
+  H2D    | DNATok (staging i64)             | 1,513,408,313 ± 121,641,083 tok/s
+  Encode | HF Rust (encode_batch)           |      599,785 ±    3,119 tok/s
+  H2D    | HF Rust (encode_batch)           |   21,883,377 ±  367,347 tok/s
+  Encode | HF Rust (robust adapter)         |      599,554 ±      702 tok/s
+  H2D    | HF Rust (robust adapter)         |   22,007,899 ±  344,445 tok/s
+  E2E    | Streaming baseline               |  705,638,029 ± 77,912,281 tok/s
+  E2E    | Streaming pipelined              |  781,375,035 ± 6,022,282 tok/s
+  Encode | DNATok (encode i64)              |  256,058,010 ± 6,256,609 tok/s
+  H2D    | DNATok (encode i64)              | 2,154,482,623 ± 127,094,533 tok/s
+  Encode | DNATok (staging i32)             |  260,145,792 ± 2,758,145 tok/s
+  H2D    | DNATok (staging i32)             |  477,474,005 ± 23,606,639 tok/s
+  Encode | DNATok (staging i64)             |  243,827,574 ± 24,347,802 tok/s
+  H2D    | DNATok (staging i64)             | 2,388,968,547 ± 53,075,803 tok/s
+  Encode | HF Rust (encode_batch)           |      594,896 ±    2,982 tok/s
+  H2D    | HF Rust (encode_batch)           |   21,479,000 ±  264,987 tok/s
+  Encode | HF Rust (robust adapter)         |      597,640 ±    1,373 tok/s
+  H2D    | HF Rust (robust adapter)         |   21,767,610 ±  167,775 tok/s
+  E2E    | Streaming baseline               |  869,791,574 ± 8,262,822 tok/s
+  E2E    | Streaming pipelined              |  970,118,350 ± 4,962,101 tok/s
+  Encode | DNATok (encode i64)              |  220,787,350 ± 38,887,463 tok/s
+  H2D    | DNATok (encode i64)              | 3,216,418,988 ± 54,701,036 tok/s
+  Encode | DNATok (staging i32)             |  217,181,281 ± 7,881,079 tok/s
+  H2D    | DNATok (staging i32)             |  506,274,148 ± 3,923,929 tok/s
+  Encode | DNATok (staging i64)             |  231,826,748 ± 23,395,160 tok/s
+  H2D    | DNATok (staging i64)             | 3,257,536,847 ± 33,479,416 tok/s
+  Encode | HF Rust (encode_batch)           |      596,964 ±    3,087 tok/s
+  H2D    | HF Rust (encode_batch)           |   21,901,284 ±   76,220 tok/s
+  Encode | HF Rust (robust adapter)         |      598,733 ±    1,226 tok/s
+  H2D    | HF Rust (robust adapter)         |   21,507,732 ±  423,727 tok/s
+  E2E    | Streaming baseline               |  958,592,669 ± 10,511,886 tok/s
+  E2E    | Streaming pipelined              | 1,091,640,318 ± 6,374,635 tok/s
+  Encode | DNATok (encode i64)              |  373,560,886 ± 8,538,421 tok/s
+  H2D    | DNATok (encode i64)              |  884,428,490 ± 14,830,044 tok/s
+  Encode | DNATok (staging i32)             |  344,246,521 ± 35,470,661 tok/s
+  H2D    | DNATok (staging i32)             |  693,295,002 ± 5,391,819 tok/s
+  Encode | DNATok (staging i64)             |  346,008,972 ± 57,876,844 tok/s
+  H2D    | DNATok (staging i64)             |  856,060,778 ± 3,708,751 tok/s
+  Encode | HF Rust (encode_batch)           |      587,341 ±    4,237 tok/s
+  H2D    | HF Rust (encode_batch)           |   22,050,980 ±   65,587 tok/s
+  Encode | HF Rust (robust adapter)         |      593,074 ±      423 tok/s
+  H2D    | HF Rust (robust adapter)         |   21,886,689 ±  484,502 tok/s
+  E2E    | Streaming baseline               |  395,348,242 ± 33,181,992 tok/s
+  E2E    | Streaming pipelined              |  315,544,922 ± 34,416,209 tok/s
+  Encode | DNATok (encode i64)              |  373,264,772 ± 4,487,447 tok/s
+  H2D    | DNATok (encode i64)              |  904,911,436 ± 18,193,733 tok/s
+  Encode | DNATok (staging i32)             |  369,896,754 ± 14,636,373 tok/s
+  H2D    | DNATok (staging i32)             |  655,501,522 ± 7,406,940 tok/s
+  Encode | DNATok (staging i64)             |  342,684,700 ± 53,647,144 tok/s
+  H2D    | DNATok (staging i64)             |  873,352,290 ± 3,953,388 tok/s
+  Encode | HF Rust (encode_batch)           |      599,617 ±    2,982 tok/s
+  H2D    | HF Rust (encode_batch)           |   22,209,504 ±  110,840 tok/s
+  Encode | HF Rust (robust adapter)         |      594,667 ±    3,468 tok/s
+  H2D    | HF Rust (robust adapter)         |   22,475,539 ±  338,607 tok/s
+  E2E    | Streaming baseline               |  460,732,243 ± 40,802,302 tok/s
+  E2E    | Streaming pipelined              |  445,790,986 ± 19,790,724 tok/s
+  Encode | DNATok (encode i64)              |  354,673,562 ± 1,463,388 tok/s
+  H2D    | DNATok (encode i64)              |  971,016,383 ± 54,341,054 tok/s
+  Encode | DNATok (staging i32)             |  371,182,376 ± 15,570,557 tok/s
+  H2D    | DNATok (staging i32)             |  821,015,473 ± 40,753,553 tok/s
+  Encode | DNATok (staging i64)             |  335,566,799 ± 50,945,954 tok/s
+  H2D    | DNATok (staging i64)             | 1,000,140,055 ± 49,077,711 tok/s
+  Encode | HF Rust (encode_batch)           |      600,768 ±    3,963 tok/s
+  H2D    | HF Rust (encode_batch)           |   22,531,478 ±  224,317 tok/s
+  Encode | HF Rust (robust adapter)         |      598,048 ±    1,474 tok/s
+  H2D    | HF Rust (robust adapter)         |   22,716,727 ±  110,787 tok/s
+  E2E    | Streaming baseline               |  565,942,976 ± 76,547,532 tok/s
+  E2E    | Streaming pipelined              |  523,996,406 ± 40,851,242 tok/s
+  Encode | DNATok (encode i64)              |  351,742,313 ± 9,343,419 tok/s
+  H2D    | DNATok (encode i64)              | 1,205,476,346 ± 67,989,445 tok/s
+  Encode | DNATok (staging i32)             |  324,664,820 ± 85,917,147 tok/s
+  H2D    | DNATok (staging i32)             | 1,207,091,190 ± 40,532,066 tok/s
+  Encode | DNATok (staging i64)             |  298,137,889 ± 54,594,965 tok/s
+  H2D    | DNATok (staging i64)             | 1,591,582,903 ± 71,472,984 tok/s
+  Encode | HF Rust (encode_batch)           |      597,500 ±    2,664 tok/s
+  H2D    | HF Rust (encode_batch)           |   22,684,695 ±  295,409 tok/s
+  Encode | HF Rust (robust adapter)         |      599,543 ±    2,191 tok/s
+  H2D    | HF Rust (robust adapter)         |   22,555,741 ±  418,844 tok/s
+  E2E    | Streaming baseline               |  778,772,640 ± 35,777,811 tok/s
+  E2E    | Streaming pipelined              |  768,970,056 ± 70,201,194 tok/s
+  Encode | DNATok (encode i64)              |  294,017,102 ± 3,722,964 tok/s
+  H2D    | DNATok (encode i64)              | 2,158,774,405 ± 143,645,472 tok/s
+  Encode | DNATok (staging i32)             |  295,470,938 ± 6,989,538 tok/s
+  H2D    | DNATok (staging i32)             |  514,447,297 ± 19,513,847 tok/s
+  Encode | DNATok (staging i64)             |  280,394,086 ± 28,198,199 tok/s
+  H2D    | DNATok (staging i64)             | 2,455,121,044 ± 93,887,244 tok/s
+  Encode | HF Rust (encode_batch)           |      602,102 ±      655 tok/s
+  H2D    | HF Rust (encode_batch)           |   21,757,116 ±  104,289 tok/s
+  Encode | HF Rust (robust adapter)         |      604,625 ±    2,191 tok/s
+  H2D    | HF Rust (robust adapter)         |   21,612,463 ±   32,467 tok/s
+  E2E    | Streaming baseline               |  879,640,916 ± 1,526,361 tok/s
+  E2E    | Streaming pipelined              |  973,696,745 ± 18,782,033 tok/s
+  Encode | DNATok (encode i64)              |  292,167,260 ± 5,586,306 tok/s
+  H2D    | DNATok (encode i64)              | 3,220,444,531 ± 48,606,568 tok/s
+  Encode | DNATok (staging i32)             |  225,936,329 ±  877,647 tok/s
+  H2D    | DNATok (staging i32)             |  506,713,031 ± 2,183,341 tok/s
+  Encode | DNATok (staging i64)             |  247,680,021 ± 20,333,596 tok/s
+  H2D    | DNATok (staging i64)             | 3,237,621,571 ± 19,702,790 tok/s
+  Encode | HF Rust (encode_batch)           |      599,202 ±    4,612 tok/s
+  H2D    | HF Rust (encode_batch)           |   21,739,148 ±  128,038 tok/s
+  Encode | HF Rust (robust adapter)         |      604,273 ±    1,412 tok/s
+  H2D    | HF Rust (robust adapter)         |   21,727,055 ±  327,219 tok/s
+  E2E    | Streaming baseline               |  970,178,210 ± 4,440,239 tok/s
+  E2E    | Streaming pipelined              | 1,108,551,506 ± 1,771,721 tok/s
+  E2E    | Ablation-baseline                |  755,936,637 ± 75,738,720 tok/s
+  E2E    | Ablation-int32_only              |  703,348,264 ± 15,811,449 tok/s
+  E2E    | Ablation-overlap_only            |  781,441,669 ± 56,816,841 tok/s
+  E2E    | Ablation-both                    |  709,141,427 ± 107,434,531 tok/s
+
+================================================================================

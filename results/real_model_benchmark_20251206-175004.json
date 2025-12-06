@@ -1,0 +1,92 @@
+[
+  {
+    "Model":"NT",
+    "Scenario":"Latency",
+    "Batch":1,
+    "SeqLen":1020,
+    "Path":"ids",
+    "Baseline (s)":0.0008048823,
+    "DNATok (s)":0.0015521693,
+    "Speedup":0.5185531934
+  },
+  {
+    "Model":"NT",
+    "Scenario":"Throughput",
+    "Batch":32,
+    "SeqLen":1020,
+    "Path":"bytes",
+    "Baseline (s)":0.012374837,
+    "DNATok (s)":0.0003333266,
+    "Speedup":37.1252570211
+  },
+  {
+    "Model":"NT",
+    "Scenario":"LongSeq",
+    "Batch":1,
+    "SeqLen":4092,
+    "Path":"bytes",
+    "Baseline (s)":0.0015812612,
+    "DNATok (s)":0.0002733097,
+    "Speedup":5.7856018156
+  },
+  {
+    "Model":"Hyena",
+    "Scenario":"Latency",
+    "Batch":1,
+    "SeqLen":1024,
+    "Path":"bytes",
+    "Baseline (s)":0.0007436366,
+    "DNATok (s)":0.0001690486,
+    "Speedup":4.3989509566
+  },
+  {
+    "Model":"Hyena",
+    "Scenario":"Throughput",
+    "Batch":64,
+    "SeqLen":1024,
+    "Path":"ids",
+    "Baseline (s)":0.0255898551,
+    "DNATok (s)":0.015702313,
+    "Speedup":1.629686985
+  },
+  {
+    "Model":"Hyena",
+    "Scenario":"LongSeq",
+    "Batch":1,
+    "SeqLen":8192,
+    "Path":"bytes",
+    "Baseline (s)":0.0071295944,
+    "DNATok (s)":0.0003036323,
+    "Speedup":23.4810166573
+  },
+  {
+    "Model":"Evo2",
+    "Scenario":"Latency",
+    "Batch":1,
+    "SeqLen":1024,
+    "Path":"ids",
+    "Baseline (s)":1.3523835737,
+    "DNATok (s)":0.0564474059,
+    "Speedup":23.9582944842
+  },
+  {
+    "Model":"Evo2",
+    "Scenario":"Throughput",
+    "Batch":16,
+    "SeqLen":1024,
+    "Path":"ids",
+    "Baseline (s)":0.568771062,
+    "DNATok (s)":0.5685782437,
+    "Speedup":1.0003391236
+  },
+  {
+    "Model":"Evo2",
+    "Scenario":"LongSeq",
+    "Batch":1,
+    "SeqLen":4096,
+    "Path":"ids",
+    "Baseline (s)":0.1671629141,
+    "DNATok (s)":0.177074942,
+    "Speedup":0.9440235429
+  }
+]

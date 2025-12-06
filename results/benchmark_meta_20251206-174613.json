@@ -1,0 +1,47 @@
+{
+  "timestamp": "20251206-174613",
+  "host": "",
+  "output_dir": "/DNAtok/results",
+  "configurations_run": [
+    "standard",
+    "large_batch",
+    "long_sequence"
+  ],
+  "sweeps_run": {
+    "batch_size": true,
+    "sequence_length": true,
+    "ablation": true
+  },
+  "settings": {
+    "device": "cuda:0",
+    "warmup_reps": 3,
+    "seed": 42,
+    "emb_dim": 128,
+    "vocab_mod": 8192,
+    "emb_batch": 2048,
+    "use_compute_shim": true,
+    "prefer_int32_h2d": true,
+    "overlap_copy_compute": true
+  },
+  "system": {
+    "python_version": "3.12.3 (main, Aug 14 2025, 17:47:21) [GCC 13.3.0]",
+    "torch_version": "2.10.0a0+b558c986e8.nv25.11",
+    "cuda_runtime": "13.0",
+    "cudnn_version": 91500,
+    "cpu_count": 96,
+    "total_memory_gb": 1007.5994033813477
+  },
+  "gpu": {
+    "name": "NVIDIA H200",
+    "total_mem_bytes": 150393585664,
+    "total_mem_gb": 140.06494140625,
+    "multi_processor_count": 132,
+    "major": 9,
+    "minor": 0
+  },
+  "tokenizer": {
+    "implementation": "CharLevelTokenizer",
+    "evo2_available": true
+  },
+  "total_benchmarks_run": 668
+}
