@@ -918,12 +918,14 @@ __global__ void bpe_v3_kernel(
     std::int32_t*                    d_entry_pos,    // [B*entry_pool_size]
     std::int32_t*                    d_entry_next,   // [B*entry_pool_size]
     std::int32_t*                    d_entry_count,  // [B] atomic counter
-    std::int32_t*                    d_scratch,      // [B*T_max]
+    std::int32_t*                    d_scratch,      // [B*entry_pool_size]
     std::int32_t*                    d_overflow,     // [B] flag, set if pool overflowed
+    std::int32_t*                    d_bucket_bits,  // [B*bits_words] non-empty summary
     std::int32_t* __restrict__       d_out_lengths,  // [B]
     std::int32_t                     T_max,
     std::int32_t                     entry_pool_size,
-    std::int32_t                     num_merges)
+    std::int32_t                     num_merges,
+    std::int32_t                     bits_words)     // = ceil(num_merges/32)
 {
   int seq_id = blockIdx.x;
   int tid    = threadIdx.x;
@@ -950,9 +952,13 @@ __global__ void bpe_v3_kernel(
   // Scratch is sized [B, entry_pool_size] to accommodate worst-case
   // bucket walks (single bucket can hold ~3T entries on pathological
   // inputs). Stride = entry_pool_size, NOT T_max.
-  std::int32_t* sc = d_scratch    + static_cast<std::size_t>(seq_id) * entry_pool_size;
-  std::int32_t* ec = d_entry_count + seq_id;
-  std::int32_t* ovf = d_overflow + seq_id;
+  std::int32_t* sc   = d_scratch    + static_cast<std::size_t>(seq_id) * entry_pool_size;
+  std::int32_t* ec   = d_entry_count + seq_id;
+  std::int32_t* ovf  = d_overflow + seq_id;
+  // bit-array summary of bh: bits[i] bit j set ⟺ bh[i*32+j] non-empty.
+  // 32 ranks per uint32; we cast d_bucket_bits to uint32* for atomicOr.
+  unsigned int* bits = reinterpret_cast<unsigned int*>(d_bucket_bits)
+                       + static_cast<std::size_t>(seq_id) * bits_words;
 
   // Step 1: initialize tokens, DLL, bucket heads, counters.
   for (int i = tid; i < n; i += nthr) {
@@ -961,6 +967,7 @@ __global__ void bpe_v3_kernel(
     pv[i] = (i > 0)     ? (i - 1) : V2_NIL;
   }
   for (int r = tid; r < num_merges; r += nthr) bh[r] = V2_NIL;
+  for (int w = tid; w < bits_words;  w += nthr) bits[w] = 0u;
   if (tid == 0) { *ec = 0; *ovf = 0; }
   __syncthreads();
 
@@ -978,6 +985,7 @@ __global__ void bpe_v3_kernel(
           old_head = bh[r];
           en[slot] = old_head;
         } while (atomicCAS(&bh[r], old_head, slot) != old_head);
+        atomicOr(&bits[r >> 5], 1u << (r & 31));
       } else {
         atomicExch(ovf, 1);
       }
@@ -995,6 +1003,15 @@ __global__ void bpe_v3_kernel(
   __shared__ int sh_n_selected;
   __shared__ int sh_red[DNATOK_BLOCK_SIZE];
 
+  // sh_min_insert tracks the lowest rank that step 3e inserts into in
+  // the *current* iteration. It bounds the cur_rank scan in step 3f:
+  //   * The new lowest non-empty bucket is in [R+1, sh_min_insert].
+  //   * We scan only that range (bounded above by sh_min_insert) and
+  //     combine with sh_min_insert itself if it's < num_merges.
+  // This avoids the full O(num_merges) scan that dominates v3 on
+  // tokenisers with large vocabularies (GENA-LM: 32k merges).
+  __shared__ int sh_min_insert;
+
   // CUB BlockMergeSort temp storage. Union with sh_red because the sort
   // and the rank-min reduction are never live simultaneously (sort runs
   // strictly between drain and the next reduction). NOTE: kept SEPARATE
@@ -1004,11 +1021,17 @@ __global__ void bpe_v3_kernel(
                                               DNATOK_V3_ITEMS_PER_THREAD>;
   __shared__ typename BlockMergeSortT::TempStorage sort_storage;
 
-  // Initial advance to lowest non-empty bucket (parallel scan).
+  // Initial advance to lowest non-empty bucket — scan the bits array
+  // instead of bh directly. Each thread looks at its share of words,
+  // contributes the lowest rank it finds.
   {
     int local_min = num_merges;
-    for (int r = tid; r < num_merges; r += nthr) {
-      if (bh[r] != V2_NIL && r < local_min) local_min = r;
+    for (int w = tid; w < bits_words; w += nthr) {
+      unsigned int bw = bits[w];
+      if (bw != 0u) {
+        int candidate = w * 32 + __ffs(bw) - 1;
+        if (candidate < local_min) local_min = candidate;
+      }
     }
     sh_red[tid] = local_min;
     __syncthreads();
@@ -1019,12 +1042,14 @@ __global__ void bpe_v3_kernel(
       }
       __syncthreads();
     }
-    if (tid == 0) sh_cur_rank = sh_red[0];
+    if (tid == 0) sh_cur_rank = (sh_red[0] < num_merges) ? sh_red[0] : num_merges;
     __syncthreads();
   }
 
   while (sh_cur_rank < num_merges) {
     int R = sh_cur_rank;
+    if (tid == 0) sh_min_insert = num_merges;
+    __syncthreads();
 
     // Step 3a: drain bucket R, collect positions into scratch, validate
     // in parallel. The linked-list walk is unavoidably sequential, but
@@ -1040,6 +1065,8 @@ __global__ void bpe_v3_kernel(
     if (tid == 0) {
       int slot = bh[R];
       bh[R] = V2_NIL;
+      // Clear bit R — bucket is now empty (may be repopulated by step 3e).
+      bits[R >> 5] &= ~(1u << (R & 31));
       int cnt = 0;
       // A single bucket can hold up to ~3T entries in pathological cases
       // (initial + 2 inserts/merge across all merges). The scratch
@@ -1085,12 +1112,27 @@ __global__ void bpe_v3_kernel(
 
     int n_cand = n_raw;
     if (n_cand == 0) {
-      // Re-scan for next non-empty bucket (may need to revisit lower
-      // ranks if a new entry was inserted at < R — though in this branch
-      // we didn't insert anything this iter, so it's just R+1 onward).
-      int local_min = num_merges;
-      for (int r = R + 1 + tid; r < num_merges; r += nthr) {
-        if (bh[r] != V2_NIL && r < local_min) local_min = r;
+      // No merges fired → no inserts → no entries < R+1 are possible.
+      // Scan the bits summary from word(R+1) upward.
+      int start_word = (R + 1) >> 5;
+      int start_bit  = (R + 1) & 31;
+      int local_min  = num_merges;
+      // Boundary word: only consider bits >= start_bit.
+      if (tid == 0 && start_word < bits_words) {
+        unsigned int bw = bits[start_word];
+        if (start_bit > 0) bw &= ~((1u << start_bit) - 1u);
+        if (bw != 0u) {
+          int candidate = start_word * 32 + __ffs(bw) - 1;
+          if (candidate < local_min) local_min = candidate;
+        }
+      }
+      // Subsequent words: every thread takes its share.
+      for (int w = start_word + 1 + tid; w < bits_words; w += nthr) {
+        unsigned int bw = bits[w];
+        if (bw != 0u) {
+          int candidate = w * 32 + __ffs(bw) - 1;
+          if (candidate < local_min) local_min = candidate;
+        }
       }
       sh_red[tid] = local_min;
       __syncthreads();
@@ -1101,7 +1143,7 @@ __global__ void bpe_v3_kernel(
         }
         __syncthreads();
       }
-      if (tid == 0) sh_cur_rank = sh_red[0];
+      if (tid == 0) sh_cur_rank = (sh_red[0] < num_merges) ? sh_red[0] : num_merges;
       __syncthreads();
       continue;
     }
@@ -1216,6 +1258,8 @@ __global__ void bpe_v3_kernel(
     //   For each selected p: left pair (pv[p]) and right pair (p).
     //   Each insert allocates a fresh entry slot — no per-position
     //   uniqueness constraint, so always-correct even for stale entries.
+    //   Each insert also atomicMin's its rank into sh_min_insert so step
+    //   3f can bound its scan range.
     for (int i = tid; i < n_sel; i += nthr) {
       int p = sc[i];
 
@@ -1236,6 +1280,8 @@ __global__ void bpe_v3_kernel(
                 old_head = bh[r];
                 en[slot] = old_head;
               } while (atomicCAS(&bh[r], old_head, slot) != old_head);
+              atomicOr(&bits[r >> 5], 1u << (r & 31));
+              atomicMin(&sh_min_insert, r);
             } else {
               atomicExch(ovf, 1);
             }
@@ -1258,6 +1304,8 @@ __global__ void bpe_v3_kernel(
               old_head = bh[r];
               en[slot] = old_head;
             } while (atomicCAS(&bh[r], old_head, slot) != old_head);
+            atomicOr(&bits[r >> 5], 1u << (r & 31));
+            atomicMin(&sh_min_insert, r);
           } else {
             atomicExch(ovf, 1);
           }
@@ -1271,11 +1319,42 @@ __global__ void bpe_v3_kernel(
       return;
     }
 
-    // Step 3f: advance cur_rank. New entries may have rank < R (no
-    // monotone guarantee). Parallel scan from 0 to find lowest non-empty.
-    int local_min = num_merges;
-    for (int r = tid; r < num_merges; r += nthr) {
-      if (bh[r] != V2_NIL && r < local_min) local_min = r;
+    // Step 3f: advance cur_rank via the bits summary.
+    //
+    // sh_min_insert is the lowest rank inserted this iter (num_merges if
+    // no inserts). It tightens the upper bound on the scan range:
+    //   - If sh_min_insert < num_merges, the actual min is in
+    //     [R+1, sh_min_insert] — we scan the bits words covering
+    //     [R+1, sh_min_insert) and combine with sh_min_insert itself.
+    //   - Otherwise the scan covers [R+1, num_merges) over the bits.
+    //
+    // Word-level scanning means we look at num_merges/32 words instead of
+    // num_merges entries — a 32× reduction in memory traffic, decisive
+    // for tokenisers with large vocabularies (GENA-LM: 32k merges →
+    // 1024 words).
+    int K = sh_min_insert;
+    int start_word = (R + 1) >> 5;
+    int start_bit  = (R + 1) & 31;
+    int end_word   = (K < num_merges) ? (K + 31) >> 5 : bits_words;
+    if (end_word > bits_words) end_word = bits_words;
+    int local_min = (K < num_merges) ? K : num_merges;
+
+    // Boundary word handled by tid 0 (mask off bits < start_bit).
+    if (tid == 0 && start_word < end_word) {
+      unsigned int bw = bits[start_word];
+      if (start_bit > 0) bw &= ~((1u << start_bit) - 1u);
+      if (bw != 0u) {
+        int candidate = start_word * 32 + __ffs(bw) - 1;
+        if (candidate < local_min) local_min = candidate;
+      }
+    }
+    // Subsequent words spread across all threads.
+    for (int w = start_word + 1 + tid; w < end_word; w += nthr) {
+      unsigned int bw = bits[w];
+      if (bw != 0u) {
+        int candidate = w * 32 + __ffs(bw) - 1;
+        if (candidate < local_min) local_min = candidate;
+      }
     }
     sh_red[tid] = local_min;
     __syncthreads();
@@ -1286,7 +1365,7 @@ __global__ void bpe_v3_kernel(
       }
       __syncthreads();
     }
-    if (tid == 0) sh_cur_rank = sh_red[0];
+    if (tid == 0) sh_cur_rank = (sh_red[0] < num_merges) ? sh_red[0] : num_merges;
     __syncthreads();
   }
 
@@ -1547,9 +1626,11 @@ public:
 
     int num_merges = static_cast<int>(vocab_.pairs.size());
     int entry_pool_size = std::max(64, T_max * DNATOK_V3_ENTRY_FACTOR);
-    ensure_workspace_v3(B, T_max, num_merges, entry_pool_size);
+    int bits_words = (num_merges + 31) >> 5;
+    ensure_workspace_v3(B, T_max, num_merges, entry_pool_size, bits_words);
     int T_kernel = static_cast<int>(ws_v3_tokens_.size(1));
     int E_kernel = static_cast<int>(ws_v3_entry_pos_.size(1));
+    int W_kernel = static_cast<int>(ws_v3_bucket_bits_.size(1));
     ws_v3_tokens_.narrow(0, 0, B).narrow(1, 0, T_max).zero_();
 
     auto tokens_buf    = ws_v3_tokens_.narrow(0, 0, B);
@@ -1561,6 +1642,7 @@ public:
     auto entry_cnt_buf  = ws_v3_entry_count_.narrow(0, 0, B);
     auto scratch_buf    = ws_v3_scratch_.narrow(0, 0, B);
     auto overflow_buf   = ws_v3_overflow_.narrow(0, 0, B);
+    auto bits_buf       = ws_v3_bucket_bits_.narrow(0, 0, B);
     auto lengths_out    = ws_v3_lengths_out_.narrow(0, 0, B);
 
     auto map_ref = map_->ref(cuco::find);
@@ -1581,10 +1663,12 @@ public:
         entry_cnt_buf.data_ptr<std::int32_t>(),
         scratch_buf.data_ptr<std::int32_t>(),
         overflow_buf.data_ptr<std::int32_t>(),
+        bits_buf.data_ptr<std::int32_t>(),
         lengths_out.data_ptr<std::int32_t>(),
         T_kernel,
         E_kernel,
-        num_merges);
+        num_merges,
+        W_kernel);
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -1740,8 +1824,8 @@ private:
 
   // Workspace for Phase 3 v3 (entry-pool bucket scheduling). The entry
   // pool size E grows independently of T; for safety we size at
-  // E = max(64, T_max * DNATOK_V3_ENTRY_FACTOR).
-  void ensure_workspace_v3(int B, int T_max, int num_merges, int E) {
+  // E = max(64, T_max * DNATOK_V3_ENTRY_FACTOR). W = bits_words.
+  void ensure_workspace_v3(int B, int T_max, int num_merges, int E, int W) {
     auto need_2d_int_T = [&](torch::Tensor& t) {
       if (!t.defined() || t.size(0) < B || t.size(1) < T_max) {
         int Bh = std::max(B, t.defined() ? static_cast<int>(t.size(0)) : 0);
@@ -1769,6 +1853,13 @@ private:
         t = torch::empty({Bh}, torch::dtype(torch::kInt32).device(torch::kCUDA));
       }
     };
+    auto need_2d_int_W = [&](torch::Tensor& t) {
+      if (!t.defined() || t.size(0) < B || t.size(1) < W) {
+        int Bh = std::max(B, t.defined() ? static_cast<int>(t.size(0)) : 0);
+        int Wh = std::max(W, t.defined() ? static_cast<int>(t.size(1)) : 0);
+        t = torch::empty({Bh, Wh}, torch::dtype(torch::kInt32).device(torch::kCUDA));
+      }
+    };
     need_2d_int_T(ws_v3_tokens_);
     need_2d_int_T(ws_v3_nxt_);
     need_2d_int_T(ws_v3_prv_);
@@ -1782,6 +1873,7 @@ private:
     // a single bucket to ~3T entries; sizing scratch to E covers them.
     need_2d_int_E(ws_v3_scratch_);
     need_1d_int (ws_v3_overflow_);
+    need_2d_int_W(ws_v3_bucket_bits_);
     need_1d_int (ws_v3_lengths_out_);
   }
 
@@ -1820,6 +1912,7 @@ private:
   torch::Tensor ws_v3_entry_count_;  // int32 [Bcap]
   torch::Tensor ws_v3_scratch_;      // int32 [Bcap, Tcap]
   torch::Tensor ws_v3_overflow_;     // int32 [Bcap]
+  torch::Tensor ws_v3_bucket_bits_;  // int32 [Bcap, ceil(num_merges/32)]
   torch::Tensor ws_v3_lengths_out_;  // int32 [Bcap]
 };
 
