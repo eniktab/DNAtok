@@ -1,0 +1,186 @@
+GB10: results_hpc/publication/__pub_grade_gb10/20260518-134221/bench_summary.csv
+H200: results_hpc/publication_h200/20260518-135138/bench_summary.csv
+A100: results_hpc/publication_a100/20260518-135348/bench_summary.csv
+
+=== Speedup vs hf_native (best dnatok method) | phase=encode ===
+
+--- scenario: standard ---
+model                          |       GB10       H200       A100  hf_p50 (ms) GB10/H200/A100
+DNABERT2_117M                  |     1.21x     3.36x     1.39x     4.02 /  18.52 /   9.91
+GENA_LM_BERT_t2t               |     0.94x     3.40x     0.98x     3.83 /  19.09 /   8.39
+METAGENE_1                     |     1.36x      -      -     4.17 /      - /      -
+NTv2_50M                       |    81.15x    68.51x    58.89x    10.15 /  12.87 /  25.01
+NTv2_500M                      |    81.14x    69.95x    58.07x    10.09 /  12.90 /  24.91
+HyenaDNA_tiny_1k               |   322.99x   305.98x   307.19x    12.42 /  15.40 /  34.08
+HyenaDNA_small_32k             |   321.47x   305.94x   302.94x    12.33 /  16.08 /  33.60
+HyenaDNA_medium_160k           |   331.44x   304.85x   306.29x    12.33 /  15.19 /  33.99
+HyenaDNA_medium_450k           |   321.17x   302.86x   303.40x    12.40 /  15.19 /  33.91
+HyenaDNA_large_1m              |   318.70x   302.96x   305.74x    12.28 /  15.12 /  33.85
+Caduceus_ph_1k_4L              |   324.22x   293.85x   300.97x    12.33 /  15.19 /  34.02
+Caduceus_ph_131k_16L           |   322.79x   297.56x   303.43x    12.48 /  15.06 /  33.83
+Caduceus_ps_131k_16L           |   321.50x   293.72x   302.68x    12.40 /  15.09 /  34.07
+Evo2_1b_base                   |   378.71x   398.95x   402.09x    14.74 /  20.34 /  45.80
+NTv3_8M_pre                    |   794.65x   711.29x   681.90x    30.46 /  36.60 /  77.09
+NTv3_100M_pre                  |   806.85x   726.43x   696.44x    30.85 /  36.63 /  78.35
+NTv3_100M_post                 |   812.03x   704.13x   690.17x    30.68 /  36.27 /  77.72
+NTv3_650M_post                 |   804.20x   721.68x   696.38x    30.56 /  36.82 /  77.69
+NTv3_650M_post_131kb           |   798.79x   719.43x   704.28x    30.37 /  36.26 /  78.13
+
+  GB10: n= 19  median= 322.8x  gmean= 147.1x  min= 0.94x  max= 812.0x
+  H200: n= 18  median= 303.9x  gmean= 200.6x  min= 3.36x  max= 726.4x
+  A100: n= 18  median= 304.6x  gmean= 174.3x  min= 0.98x  max= 704.3x
+
+  [BPE     ] GB10: n= 3  median=   1.2x  gmean=   1.2x
+  [BPE     ] H200: n= 2  median=   3.4x  gmean=   3.4x
+  [BPE     ] A100: n= 2  median=   1.2x  gmean=   1.2x
+  [LUT-kmer] GB10: n= 2  median=  81.1x  gmean=  81.1x
+  [LUT-kmer] H200: n= 2  median=  69.2x  gmean=  69.2x
+  [LUT-kmer] A100: n= 2  median=  58.5x  gmean=  58.5x
+  [LUT-char] GB10: n=14  median= 327.8x  gmean= 452.3x
+  [LUT-char] H200: n=14  median= 306.0x  gmean= 418.6x
+  [LUT-char] A100: n=14  median= 306.7x  gmean= 416.5x
+
+--- scenario: short ---
+model                          |       GB10       H200       A100  hf_p50 (ms) GB10/H200/A100
+DNABERT2_117M                  |     8.77x    29.72x     8.17x     3.14 /  14.78 /   6.49
+GENA_LM_BERT_t2t               |     5.64x    21.57x     5.78x     2.83 /  13.54 /   5.97
+METAGENE_1                     |     9.12x      -      -     3.37 /      - /      -
+NTv2_50M                       |    34.62x    31.92x    26.19x     5.67 /   7.33 /  14.16
+NTv2_500M                      |    35.36x    31.98x    26.19x     5.58 /   7.38 /  14.03
+HyenaDNA_tiny_1k               |    90.20x    91.09x    82.98x     6.90 /   8.74 /  18.65
+HyenaDNA_small_32k             |    89.58x    93.10x    82.83x     6.91 /   9.07 /  18.93
+HyenaDNA_medium_160k           |    89.54x    90.39x    83.70x     6.84 /   8.75 /  18.82
+HyenaDNA_medium_450k           |    89.47x    89.95x    84.23x     6.92 /   8.64 /  18.69
+HyenaDNA_large_1m              |    90.42x    89.65x    83.13x     6.90 /   8.72 /  18.75
+Caduceus_ph_1k_4L              |    90.79x    90.92x    83.13x     6.88 /   8.75 /  18.76
+Caduceus_ph_131k_16L           |    90.08x    90.00x    82.58x     6.94 /   8.67 /  18.71
+Caduceus_ps_131k_16L           |    90.08x    91.56x    83.82x     6.91 /   8.83 /  18.85
+Evo2_1b_base                   |   104.81x   119.49x   108.94x     8.14 /  11.43 /  24.69
+NTv3_8M_pre                    |   213.50x   201.45x   183.27x    16.15 /  19.46 /  41.37
+NTv3_100M_pre                  |   212.47x   205.37x   182.81x    16.25 /  19.75 /  41.16
+NTv3_100M_post                 |   211.74x   199.96x   182.76x    16.08 /  19.67 /  41.26
+NTv3_650M_post                 |   212.68x   201.06x   182.70x    16.29 /  19.74 /  41.20
+NTv3_650M_post_131kb           |   211.01x   201.10x   183.23x    16.16 /  19.74 /  41.31
+
+  GB10: n= 19  median=  90.1x  gmean=  69.8x  min= 5.64x  max= 213.5x
+  H200: n= 18  median=  91.0x  gmean=  88.9x  min=21.57x  max= 205.4x
+  A100: n= 18  median=  83.4x  gmean=  70.1x  min= 5.78x  max= 183.3x
+
+  [BPE     ] GB10: n= 3  median=   8.8x  gmean=   7.7x
+  [BPE     ] H200: n= 2  median=  25.6x  gmean=  25.3x
+  [BPE     ] A100: n= 2  median=   7.0x  gmean=   6.9x
+  [LUT-kmer] GB10: n= 2  median=  35.0x  gmean=  35.0x
+  [LUT-kmer] H200: n= 2  median=  32.0x  gmean=  32.0x
+  [LUT-kmer] A100: n= 2  median=  26.2x  gmean=  26.2x
+  [LUT-char] GB10: n=14  median=  90.6x  gmean= 123.6x
+  [LUT-char] H200: n=14  median=  92.3x  gmean= 123.2x
+  [LUT-char] A100: n=14  median=  84.0x  gmean= 112.5x
+
+--- scenario: long ---
+model                          |       GB10       H200       A100  hf_p50 (ms) GB10/H200/A100
+DNABERT2_117M                  |     0.60x     2.70x     0.79x     8.16 /  45.68 /  18.63
+GENA_LM_BERT_t2t               |     0.59x     2.25x     0.66x     8.32 /  40.65 /  16.02
+METAGENE_1                     |     0.66x      -      -     8.99 /      - /      -
+NTv2_50M                       |   165.82x   140.24x   124.17x    19.99 /  24.84 /  49.06
+NTv2_500M                      |   166.41x   139.24x   126.05x    19.93 /  24.79 /  48.88
+HyenaDNA_tiny_1k               |   643.00x   679.59x   874.69x    25.48 /  30.57 /  66.77
+HyenaDNA_small_32k             |   919.71x   717.78x   437.23x    26.18 /  31.86 /  67.19
+HyenaDNA_medium_160k           |   924.90x   680.35x   431.63x    26.11 /  30.68 /  66.41
+HyenaDNA_medium_450k           |   910.49x   673.09x   436.54x    26.10 /  30.34 /  67.31
+HyenaDNA_large_1m              |   890.27x   673.09x   435.24x    26.07 /  30.37 /  66.69
+Caduceus_ph_1k_4L              |   896.89x   675.84x   729.43x    26.13 /  30.53 /  67.02
+Caduceus_ph_131k_16L           |   882.44x   675.75x   429.50x    25.78 /  30.40 /  66.45
+Caduceus_ps_131k_16L           |   888.70x   648.32x   433.67x    25.89 /  30.17 /  66.89
+Evo2_1b_base                   |  1041.31x   897.93x   577.67x    30.02 /  40.12 /  90.36
+NTv3_8M_pre                    |  2175.51x  1605.04x  1083.58x    62.76 /  72.51 / 170.64
+NTv3_100M_pre                  |  2183.29x  1594.25x   977.57x    61.94 /  71.75 / 152.39
+NTv3_100M_post                 |  2188.84x  1592.42x   986.85x    62.37 /  72.25 / 153.10
+NTv3_650M_post                 |  2205.53x  1636.22x   987.85x    62.41 /  72.48 / 152.95
+NTv3_650M_post_131kb           |  2172.34x  1622.23x  1023.24x    62.37 /  72.61 / 154.18
+
+  GB10: n= 19  median= 896.9x  gmean= 298.0x  min= 0.59x  max=2205.5x
+  H200: n= 18  median= 677.7x  gmean= 393.5x  min= 2.25x  max=1636.2x
+  A100: n= 18  median= 436.9x  gmean= 255.3x  min= 0.66x  max=1083.6x
+
+  [BPE     ] GB10: n= 3  median=   0.6x  gmean=   0.6x
+  [BPE     ] H200: n= 2  median=   2.5x  gmean=   2.5x
+  [BPE     ] A100: n= 2  median=   0.7x  gmean=   0.7x
+  [LUT-kmer] GB10: n= 2  median= 166.1x  gmean= 166.1x
+  [LUT-kmer] H200: n= 2  median= 139.7x  gmean= 139.7x
+  [LUT-kmer] A100: n= 2  median= 125.1x  gmean= 125.1x
+  [LUT-char] GB10: n=14  median= 922.3x  gmean=1220.0x
+  [LUT-char] H200: n=14  median= 699.1x  gmean= 941.9x
+  [LUT-char] A100: n=14  median= 653.6x  gmean= 653.7x
+
+--- scenario: large_batch ---
+model                          |       GB10       H200       A100  hf_p50 (ms) GB10/H200/A100
+DNABERT2_117M                  |     5.30x    23.03x    10.86x    23.51 / 129.33 /  83.27
+GENA_LM_BERT_t2t               |     2.99x    15.01x     6.51x    21.24 / 118.52 /  72.11
+METAGENE_1                     |     6.87x      -      -    26.27 /      - /      -
+NTv2_50M                       |   310.39x   286.76x   249.47x    82.72 / 103.12 / 198.58
+NTv2_500M                      |   310.65x   286.18x   250.20x    82.75 / 101.55 / 198.26
+HyenaDNA_tiny_1k               |   563.60x   591.48x   563.04x    99.93 / 126.71 / 273.45
+HyenaDNA_small_32k             |   570.60x   589.02x   563.60x   101.17 / 127.85 / 270.45
+HyenaDNA_medium_160k           |   562.68x   556.87x   554.74x   101.21 / 121.52 / 272.03
+HyenaDNA_medium_450k           |   577.29x   556.78x   493.79x   101.08 / 120.46 / 271.93
+HyenaDNA_large_1m              |   572.06x   553.13x   557.13x   101.10 / 122.23 / 269.85
+Caduceus_ph_1k_4L              |   571.93x   558.72x   559.60x   100.92 / 121.20 / 272.57
+Caduceus_ph_131k_16L           |   566.34x   556.39x   522.95x   101.42 / 120.66 / 270.10
+Caduceus_ps_131k_16L           |   575.10x   553.66x   546.82x   100.82 / 120.59 / 269.26
+Evo2_1b_base                   |   667.11x   721.97x   739.34x   118.88 / 160.96 / 361.01
+NTv3_8M_pre                    |  1361.10x  1348.65x  1269.25x   246.24 / 292.97 / 620.13
+NTv3_100M_pre                  |  1388.72x  1355.05x  1269.35x   245.66 / 292.09 / 618.79
+NTv3_100M_post                 |  1406.06x  1320.86x  1270.91x   246.70 / 290.37 / 616.71
+NTv3_650M_post                 |  1383.74x  1350.99x  1281.41x   246.66 / 292.12 / 621.02
+NTv3_650M_post_131kb           |  1424.48x  1366.26x  1270.82x   247.11 / 294.89 / 619.20
+
+  GB10: n= 19  median= 571.9x  gmean= 320.5x  min= 2.99x  max=1424.5x
+  H200: n= 18  median= 557.8x  gmean= 462.5x  min=15.01x  max=1366.3x
+  A100: n= 18  median= 558.4x  gmean= 404.6x  min= 6.51x  max=1281.4x
+
+  [BPE     ] GB10: n= 3  median=   5.3x  gmean=   4.8x
+  [BPE     ] H200: n= 2  median=  19.0x  gmean=  18.6x
+  [BPE     ] A100: n= 2  median=   8.7x  gmean=   8.4x
+  [LUT-kmer] GB10: n= 2  median= 310.5x  gmean= 310.5x
+  [LUT-kmer] H200: n= 2  median= 286.5x  gmean= 286.5x
+  [LUT-kmer] A100: n= 2  median= 249.8x  gmean= 249.8x
+  [LUT-char] GB10: n=14  median= 576.2x  gmean= 793.0x
+  [LUT-char] H200: n=14  median= 590.3x  gmean= 783.9x
+  [LUT-char] A100: n=14  median= 563.3x  gmean= 753.7x
+
+--- scenario: ultra_long ---
+model                          |       GB10       H200       A100  hf_p50 (ms) GB10/H200/A100
+DNABERT2_117M                  |     1.19x     4.19x     1.06x    17.34 /  76.46 /  26.77
+GENA_LM_BERT_t2t               |     1.17x     3.74x     0.94x    17.74 /  71.76 /  24.61
+METAGENE_1                     |     0.79x      -      -    12.04 /      - /      -
+NTv2_50M                       |   169.10x   144.84x   126.47x    20.03 /  25.04 /  48.46
+NTv2_500M                      |   170.55x   143.59x   130.00x    20.11 /  24.82 /  48.62
+HyenaDNA_tiny_1k               |   999.42x   739.38x  1018.59x    25.40 /  30.42 /  67.34
+HyenaDNA_small_32k             |  1033.59x   774.20x   458.29x    25.75 /  31.54 /  66.23
+HyenaDNA_medium_160k           |  1011.34x   739.05x   469.89x    25.96 /  30.34 /  66.29
+HyenaDNA_medium_450k           |  1025.37x   733.36x   469.13x    26.14 /  30.15 /  66.77
+HyenaDNA_large_1m              |  1034.39x   745.80x   461.40x    26.15 /  30.60 /  67.02
+Caduceus_ph_1k_4L              |  1054.74x   733.98x   976.36x    25.84 /  30.17 /  66.06
+Caduceus_ph_131k_16L           |  1039.40x   734.99x   458.67x    26.17 /  30.16 /  66.48
+Caduceus_ps_131k_16L           |  1022.32x   742.21x   461.60x    25.89 /  30.26 /  67.09
+Evo2_1b_base                   |  1163.00x   976.32x   600.05x    29.95 /  40.32 /  89.31
+NTv3_8M_pre                    |  2467.73x  1749.26x  1034.77x    62.74 /  71.83 / 153.69
+NTv3_100M_pre                  |  2539.16x  1755.26x  1053.54x    62.75 /  72.20 / 153.61
+NTv3_100M_post                 |  2430.51x  1748.17x  1059.59x    62.77 /  72.56 / 152.97
+NTv3_650M_post                 |  2503.63x  1765.58x  1066.28x    62.95 /  72.51 / 152.40
+NTv3_650M_post_131kb           |  2368.75x  1771.26x  1068.82x    61.93 /  72.97 / 154.00
+
+  GB10: n= 19  median=1033.6x  gmean= 362.2x  min= 0.79x  max=2539.2x
+  H200: n= 18  median= 740.8x  gmean= 446.4x  min= 3.74x  max=1771.3x
+  A100: n= 18  median= 469.5x  gmean= 282.1x  min= 0.94x  max=1068.8x
+
+  [BPE     ] GB10: n= 3  median=   1.2x  gmean=   1.0x
+  [BPE     ] H200: n= 2  median=   4.0x  gmean=   4.0x
+  [BPE     ] A100: n= 2  median=   1.0x  gmean=   1.0x
+  [LUT-kmer] GB10: n= 2  median= 169.8x  gmean= 169.8x
+  [LUT-kmer] H200: n= 2  median= 144.2x  gmean= 144.2x
+  [LUT-kmer] A100: n= 2  median= 128.2x  gmean= 128.2x
+  [LUT-char] GB10: n=14  median=1047.1x  gmean=1416.1x
+  [LUT-char] H200: n=14  median= 760.0x  gmean=1030.3x
+  [LUT-char] A100: n=14  median= 788.2x  gmean= 706.7x
+

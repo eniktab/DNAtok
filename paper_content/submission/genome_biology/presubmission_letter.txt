@@ -1,0 +1,31 @@
+Subject: Presubmission enquiry — Beyond NLP tokenization: GPU-native, bit-identical tokenizers for genomic foundation models
+
+
+Dear Editor,
+
+I would like to ask whether the work below fits Genome Biology's scope before I prepare a formal submission.
+
+Significance (~60 words). Genomic foundation models inherit their tokenization layer from natural-language modelling, even though DNA has only four letters. We re-engineer tokenization natively for the genomic alphabet across every major foundation-model family — DNABERT-2, the Nucleotide Transformer series, HyenaDNA, Caduceus, Evo2, GENA-LM, METAGENE-1 — producing bit-identical outputs, drop-in compatible with existing checkpoints, and removing 60- to 2500-fold of inherited preprocessing time.
+
+Why this matters for genomics. The genomic foundation-model ecosystem has converged on a small set of preprocessing patterns — BPE merge tables (DNABERT-2, GENA-LM), explicit k-mer tokenization (Nucleotide Transformer family), and character-level encoding for long-context architectures (HyenaDNA, Caduceus, Evo2). All inherit either a tokenizer library written for human text or a per-sequence Python encoding loop. For single-transcript work that overhead is invisible. For pangenomic screens, population-scale variant inference, or whole-chromosome work with newer long-context models, the inherited preprocessing layer can consume a non-trivial fraction of GPU-hour budgets that would otherwise go to scientific signal. Inference itself still dominates total wall-clock — we are not claiming otherwise — but the inherited tokenization tax does not need to be there in the first place.
+
+Contribution.
+
+- A single framework supporting every widely deployed genomic foundation-model family: DNABERT-2, GENA-LM, NTv2, NTv3, METAGENE-1, HyenaDNA (tiny through large 1M-context), Caduceus (PH and PS), Evo2.
+
+- Bit-identical token IDs to each model's upstream reference tokenizer on every input we tested; existing model checkpoints work unchanged.
+
+- The interpreted Python tokenization loop is eliminated: encoding runs in parallel on the GPU using a small-alphabet-aware design, including a parallel BPE kernel that preserves canonical leftmost-merge semantics.
+
+- Inherited preprocessing tax removed: 59-170x for k-mer (NTv2), 300-2500x for character-level (HyenaDNA, Caduceus, Evo2, NTv3), 1.2-4x for BPE (DNABERT-2, GENA-LM, METAGENE-1), with the BPE win scaling with how heavily host-CPU-bound the upstream tokenizer is on a given platform.
+
+Evidence. Benchmarks were run at publication-grade parameters (50 timing iterations and 2000 CDF iterations per cell, >=1000 measurements per hardware platform) across three GPU generations and five workload regimes — from short batches (B=128, T=128 bp) through ultra-long single sequences (B=2, T=32 kbp). Bit-identical correctness was verified token-by-token against the upstream reference for every model on every platform. The implementation, raw benchmark data, and full plotting and analysis scripts will be released under an open licence so every claim can be re-run independently.
+
+Fit. This is a tooling and methodology contribution for the genomics community: a layer beneath the model that improves what every downstream consumer of these foundation models pays for. The community-facing argument — that genomic tokenization deserves a DNA-native design rather than a borrowed NLP one — is best landed at a venue that reaches genomics readers directly. The contribution is fully self-contained; reviewers can verify every claim by re-running the published benchmark suite against the released code.
+
+I would welcome a brief indication of whether this fits Genome Biology's scope.
+
+Best regards,
+
+[Name]
+[Affiliation]
