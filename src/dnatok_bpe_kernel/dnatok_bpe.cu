@@ -249,11 +249,13 @@ __global__ void bpe_kernel(
     std::int32_t*                    d_scratch,      // [B*entry_pool_size]
     std::int32_t*                    d_overflow,     // [B] flag, set if pool overflowed
     std::int32_t*                    d_bucket_bits,  // [B*bits_words] non-empty summary
+    std::int32_t*                    d_excl_bits,    // [B*excl_words] per-position excluded flags
     std::int32_t* __restrict__       d_out_lengths,  // [B]
     std::int32_t                     T_max,
     std::int32_t                     entry_pool_size,
     std::int32_t                     num_merges,
-    std::int32_t                     bits_words)     // = ceil(num_merges/32)
+    std::int32_t                     bits_words,     // = ceil(num_merges/32)
+    std::int32_t                     excl_words)     // = ceil(T_max/32)
 {
   int seq_id = blockIdx.x;
   int tid    = threadIdx.x;
@@ -287,6 +289,12 @@ __global__ void bpe_kernel(
   // 32 ranks per uint32; we cast d_bucket_bits to uint32* for atomicOr.
   unsigned int* bits = reinterpret_cast<unsigned int*>(d_bucket_bits)
                        + static_cast<std::size_t>(seq_id) * bits_words;
+  // Per-position "excluded" bits, scoped to the current outer-loop
+  // iteration. Bit set ⟺ position p is the immediate DLL neighbour of
+  // a position already speculatively selected this iter, so selecting p
+  // would conflict on the shared operand.
+  unsigned int* excl = reinterpret_cast<unsigned int*>(d_excl_bits)
+                       + static_cast<std::size_t>(seq_id) * excl_words;
 
   // Step 1: initialize tokens, DLL, bucket heads, counters.
   for (int i = tid; i < n; i += nthr) {
@@ -365,81 +373,204 @@ __global__ void bpe_kernel(
     __syncthreads();
   }
 
+  // Shared state for the speculative multi-rank inner loop.
+  __shared__ int sh_n_selected_total;
+  __shared__ int sh_min_future_rank;
+
   while (sh_cur_rank < num_merges) {
     int R = sh_cur_rank;
-    // Reset sh_min_insert. No explicit __syncthreads here: only thread 0
-    // writes this value, and the next reader is the atomicMin in step
-    // 3e — there are 4 intervening __syncthreads (between steps 3a, 3b,
-    // 3c, 3d) which guarantee visibility before the atomic is issued.
-    if (tid == 0) sh_min_insert = num_merges;
 
-    // Step 3a: drain bucket R, collect positions into scratch, validate
-    // in parallel. The linked-list walk is unavoidably sequential, but
-    // the map.find() per entry is parallelisable — that's the dominant
-    // cost in the original single-threaded drain.
-    //
-    //   Phase A (single-thread): walk the linked-list, dump raw positions
-    //   into sc[0..n_raw). Cheap pointer-follows only.
-    //
-    //   Phase B (parallel): validate each sc[i]. Invalid → mark sc[i] = -1.
-    //   Step 3b's sort will move all -1 sentinels to the front; step 3c
-    //   skips them.
+    // Outer-iter reset: clear the excluded bit-array; reset trackers.
+    for (int w = tid; w < excl_words; w += nthr) excl[w] = 0u;
     if (tid == 0) {
-      int slot = bh[R];
-      bh[R] = NIL_POS;
-      // Clear bit R — bucket is now empty (may be repopulated by step 3e).
-      bits[R >> 5] &= ~(1u << (R & 31));
-      int cnt = 0;
-      // A single bucket can hold up to ~3T entries in pathological cases
-      // (initial + 2 inserts/merge across all merges). The scratch
-      // buffer is sized to the entry pool capacity (entry_pool_size),
-      // matching the worst-case bucket size. The conditional bound is
-      // defensive; in measured workloads cnt stays well under T_max.
-      while (slot != NIL_POS && cnt < entry_pool_size) {
-        sc[cnt++] = ep[slot];
-        slot = en[slot];
-      }
-      if (slot != NIL_POS) {
-        // Would have to grow the scratch buffer to handle this case.
-        // Set overflow flag to signal the host; kernel exits cleanly.
-        atomicExch(ovf, 1);
-      }
-      sh_n_candidates = cnt;
+      sh_min_insert        = num_merges;
+      sh_min_future_rank   = num_merges;
+      sh_n_selected_total  = 0;
     }
     __syncthreads();
 
-    if (*ovf) {
-      if (tid == 0) d_out_lengths[seq_id] = -2;
-      return;
-    }
+    // -----------------------------------------------------------------
+    // SPECULATIVE MULTI-RANK INNER DRAIN
+    // -----------------------------------------------------------------
+    // HF Algorithm-1 processes ranks strictly one at a time. We extend
+    // it: within ONE outer iter we drain buckets in ascending-rank
+    // order until firing one more rank would violate HF's order.
+    //
+    // Safety gate: after selecting a candidate p at rank R, we look up
+    // the rank of the two new pairs its merge will create — at prv[p]
+    // and at p (post-merge). atomicMin those ranks into
+    // sh_min_future_rank. As long as the next bucket rank R' satisfies
+    // R' ≤ sh_min_future_rank, firing R' in the same iter preserves HF
+    // schedule: any deferred lower-rank merge will only ever appear at
+    // a rank ≥ R', so HF would not have done it before R'.
+    //
+    // Per-position exclusion (excl bit-array) records the immediate
+    // DLL neighbours of speculatively-selected positions — they share
+    // an operand position and cannot be selected in the same iter.
+    int R_inner = R;
+    while (R_inner < num_merges && R_inner <= sh_min_future_rank) {
+      // Advance R_inner to the next non-empty bucket within the gate.
+      if (tid == 0) {
+        int r = R_inner;
+        while (r < num_merges && bh[r] == NIL_POS) ++r;
+        sh_n_candidates = r;  // borrow as broadcast slot
+      }
+      __syncthreads();
+      R_inner = sh_n_candidates;
+      if (R_inner >= num_merges || R_inner > sh_min_future_rank) break;
 
-    int n_raw = sh_n_candidates;
-    for (int i = tid; i < n_raw; i += nthr) {
-      int p = sc[i];
-      bool valid = false;
-      if (nx[p] != DEAD_POS) {
-        int nb = nx[p];
-        if (nb != NIL_POS && nb != DEAD_POS) {
-          PairKey k = pack_pair(tk[p], tk[nb]);
-          auto it = map_ref.find(k);
-          if (it != map_ref.end()) {
-            int r = static_cast<int>(unpack_val((*it).second).rank);
-            if (r == R) valid = true;
+      // Step 3a: drain bucket R_inner into sc[base..base+n_raw), where
+      // base = sh_n_selected_total (= end of the accumulated selected
+      // list). Single-thread linked-list walk + parallel validation.
+      if (tid == 0) {
+        int slot = bh[R_inner];
+        bh[R_inner] = NIL_POS;
+        bits[R_inner >> 5] &= ~(1u << (R_inner & 31));
+        int base = sh_n_selected_total;
+        int cnt = 0;
+        while (slot != NIL_POS && (base + cnt) < entry_pool_size) {
+          sc[base + cnt++] = ep[slot];
+          slot = en[slot];
+        }
+        if (slot != NIL_POS) atomicExch(ovf, 1);
+        sh_n_candidates = cnt;
+      }
+      __syncthreads();
+      if (*ovf) {
+        if (tid == 0) d_out_lengths[seq_id] = -2;
+        return;
+      }
+      int n_raw = sh_n_candidates;
+      int base  = sh_n_selected_total;
+
+      // Parallel validate: mark each candidate -1 if its current pair
+      // doesn't have rank R_inner, OR if the position is in the
+      // excluded bit-array.
+      for (int i = tid; i < n_raw; i += nthr) {
+        int idx = base + i;
+        int p = sc[idx];
+        bool valid = false;
+        if ((excl[p >> 5] & (1u << (p & 31))) == 0 && nx[p] != DEAD_POS) {
+          int nb = nx[p];
+          if (nb != NIL_POS && nb != DEAD_POS) {
+            PairKey k = pack_pair(tk[p], tk[nb]);
+            auto it = map_ref.find(k);
+            if (it != map_ref.end() &&
+                static_cast<int>(unpack_val((*it).second).rank) == R_inner) {
+              valid = true;
+            }
+          }
+        }
+        if (!valid) sc[idx] = -1;
+      }
+      __syncthreads();
+
+      // Step 3b: sort sc[base..base+n_raw) by value. Same dual-mode
+      // strategy as before — CUB BlockMergeSort above the threshold,
+      // single-thread insertion sort below or above SORT_CAP.
+      {
+        constexpr int IPT         = DNATOK_BPE_ITEMS_PER_THREAD;
+        constexpr int SORT_CAP    = IPT * DNATOK_BLOCK_SIZE;
+        constexpr int SORT_THRESH = 96;
+        if (n_raw >= SORT_THRESH && n_raw <= SORT_CAP) {
+          int my_items[IPT];
+          #pragma unroll
+          for (int j = 0; j < IPT; ++j) {
+            int idx = tid + j * DNATOK_BLOCK_SIZE;
+            my_items[j] = (idx < n_raw) ? sc[base + idx] : 0x7FFFFFFF;
+          }
+          __syncthreads();
+          BlockMergeSortT(sort_storage).Sort(
+              my_items,
+              [] __device__ (int a, int b) { return a < b; });
+          __syncthreads();
+          #pragma unroll
+          for (int j = 0; j < IPT; ++j) {
+            int dst = tid * IPT + j;
+            if (dst < n_raw) sc[base + dst] = my_items[j];
+          }
+          __syncthreads();
+        } else if (n_raw >= 2) {
+          if (tid == 0) {
+            for (int i = 1; i < n_raw; ++i) {
+              int v = sc[base + i]; int j = i - 1;
+              while (j >= 0 && sc[base + j] > v) {
+                sc[base + j + 1] = sc[base + j]; --j;
+              }
+              sc[base + j + 1] = v;
+            }
+          }
+          __syncthreads();
+        }
+      }
+
+      // Step 3c: filter — single-pass walk over sorted sc[base..base+n_raw).
+      // Skip -1 sentinels and duplicates; skip if the position is now
+      // in excl (set by a prior selection earlier in this iter); else
+      // select it, write to sc[write..], mark its neighbours excluded.
+      if (tid == 0) {
+        int write_idx = base;
+        int prev_p = NIL_POS;
+        for (int i = base; i < base + n_raw; ++i) {
+          int p = sc[i];
+          if (p < 0) continue;
+          if (p == prev_p) continue;
+          prev_p = p;
+          if ((excl[p >> 5] & (1u << (p & 31))) != 0) continue;
+          sc[write_idx++] = p;
+          int q;
+          if ((q = nx[p]) != NIL_POS && q != DEAD_POS)
+            excl[q >> 5] |= 1u << (q & 31);
+          if ((q = pv[p]) != NIL_POS && q != DEAD_POS)
+            excl[q >> 5] |= 1u << (q & 31);
+        }
+        sh_n_selected_total = write_idx;
+      }
+      __syncthreads();
+      int n_new = sh_n_selected_total - base;
+
+      // Step 3c-LOOK-AHEAD: for each survivor, simulate the merge and
+      // look up the rank of the two new neighbour pairs. atomicMin the
+      // smallest into sh_min_future_rank. If that value drops below
+      // R_inner+1 we'll stop draining at the next loop check.
+      for (int i = tid; i < n_new; i += nthr) {
+        int p = sc[base + i];
+        int old_next = nx[p];
+        PairKey k = pack_pair(tk[p], tk[old_next]);
+        auto it = map_ref.find(k);
+        // Validated above; merge result is guaranteed to exist.
+        int new_tok = unpack_val((*it).second).new_token;
+        int ool = nx[old_next];
+        if (ool != NIL_POS && ool != DEAD_POS) {
+          PairKey kr = pack_pair(new_tok, tk[ool]);
+          auto itr = map_ref.find(kr);
+          if (itr != map_ref.end()) {
+            int r = static_cast<int>(unpack_val((*itr).second).rank);
+            atomicMin(&sh_min_future_rank, r);
+          }
+        }
+        int left = pv[p];
+        if (left != NIL_POS && left != DEAD_POS) {
+          PairKey kl = pack_pair(tk[left], new_tok);
+          auto itl = map_ref.find(kl);
+          if (itl != map_ref.end()) {
+            int r = static_cast<int>(unpack_val((*itl).second).rank);
+            atomicMin(&sh_min_future_rank, r);
           }
         }
       }
-      if (!valid) sc[i] = -1;
-    }
-    __syncthreads();
+      __syncthreads();
 
-    int n_cand = n_raw;
-    if (n_cand == 0) {
-      // No merges fired → no inserts → no entries < R+1 are possible.
-      // Scan the bits summary from word(R+1) upward.
+      R_inner += 1;
+    } // end speculative inner loop
+
+    int n_sel = sh_n_selected_total;
+    if (n_sel == 0) {
+      // No merges this outer iter — scan bits for the next non-empty
+      // bucket from R+1 onward and advance.
       int start_word = (R + 1) >> 5;
       int start_bit  = (R + 1) & 31;
       int local_min  = num_merges;
-      // Boundary word: only consider bits >= start_bit.
       if (tid == 0 && start_word < bits_words) {
         unsigned int bw = bits[start_word];
         if (start_bit > 0) bw &= ~((1u << start_bit) - 1u);
@@ -448,7 +579,6 @@ __global__ void bpe_kernel(
           if (candidate < local_min) local_min = candidate;
         }
       }
-      // Subsequent words: every thread takes its share.
       for (int w = start_word + 1 + tid; w < bits_words; w += nthr) {
         unsigned int bw = bits[w];
         if (bw != 0u) {
@@ -461,88 +591,6 @@ __global__ void bpe_kernel(
       __syncthreads();
       continue;
     }
-
-    // Step 3b: sort sc[0..n_cand). After Phase B above, sc has positions
-    // mixed with -1 sentinels. Sort puts -1 sentinels at the front and
-    // valid positions in ascending order at the back.
-    //
-    // CUB BlockMergeSort handles up to ITEMS_PER_THREAD * BLOCK_SIZE
-    // items in one collective call (default 16 * 256 = 4096). Larger
-    // buckets fall back to single-thread insertion sort.
-    constexpr int IPT          = DNATOK_BPE_ITEMS_PER_THREAD;
-    constexpr int SORT_CAP     = IPT * DNATOK_BLOCK_SIZE;
-    // Threshold for BlockMergeSort vs single-thread insertion sort. The
-    // parallel sort has fixed setup overhead (shared memory init, CUB
-    // merge passes) that exceeds the insertion-sort cost for small
-    // buckets. Measured crossover on GB10 is around n=64 — below that,
-    // insertion sort wins. Use a slightly higher threshold for safety
-    // since the parallel path also pays for cross-block sync.
-    constexpr int SORT_THRESH  = 96;
-    if (n_cand >= SORT_THRESH && n_cand <= SORT_CAP) {
-      int my_items[IPT];
-      #pragma unroll
-      for (int j = 0; j < IPT; ++j) {
-        int idx = tid + j * DNATOK_BLOCK_SIZE;
-        my_items[j] = (idx < n_cand) ? sc[idx] : 0x7FFFFFFF;
-      }
-      __syncthreads();
-      BlockMergeSortT(sort_storage).Sort(
-          my_items,
-          [] __device__ (int a, int b) { return a < b; });
-      __syncthreads();
-      // BlockMergeSort outputs in BLOCKED layout — thread t holds the
-      // items at sorted positions [t*IPT, (t+1)*IPT). Write them out.
-      #pragma unroll
-      for (int j = 0; j < IPT; ++j) {
-        int dst = tid * IPT + j;
-        if (dst < n_cand) sc[dst] = my_items[j];
-      }
-      __syncthreads();
-    } else if (n_cand >= 2) {
-      // Single-thread insertion sort — used for small buckets (< 96
-      // candidates, the common case in the tail) AND for very large
-      // buckets that exceed SORT_CAP (rare, only when T_max > SORT_CAP).
-      if (tid == 0) {
-        for (int i = 1; i < n_cand; ++i) {
-          int v = sc[i]; int j = i - 1;
-          while (j >= 0 && sc[j] > v) { sc[j + 1] = sc[j]; --j; }
-          sc[j + 1] = v;
-        }
-      }
-      __syncthreads();
-    }
-    // (n_cand <= 1: nothing to sort.)
-
-    // Step 3c: single-pass walk over the sorted sc[0..n_cand) that:
-    //   - skips -1 sentinels (invalid entries from Phase B).
-    //   - dedups consecutive identical positions (entry pool can have
-    //     duplicates when adjacent merges insert the same (position,
-    //     rank) pair).
-    //   - applies the non-overlap filter (skip p if last_kept's right
-    //     neighbour in the DLL is p — that would conflict on the shared
-    //     operand position).
-    // Single-threaded because the filter decision at p depends on the
-    // last-kept selection.
-    if (tid == 0) {
-      int n_sel = 0;
-      int last_kept = NIL_POS;
-      int prev_p    = NIL_POS;  // for dedup
-      for (int i = 0; i < n_cand; ++i) {
-        int p = sc[i];
-        if (p < 0) continue;            // skip -1 sentinel
-        if (p == prev_p) continue;      // skip dup
-        prev_p = p;
-        if (last_kept != NIL_POS && nx[last_kept] == p) {
-          // Overlap with prior selection — skip; p will be killed by it.
-          continue;
-        }
-        sc[n_sel++] = p;
-        last_kept = p;
-      }
-      sh_n_selected = n_sel;
-    }
-    __syncthreads();
-    int n_sel = sh_n_selected;
 
     // Step 3d: apply merges in two passes.
     //   Pass 1: tokens, nxt, mark right-operand DEAD.
@@ -841,10 +889,13 @@ public:
     int num_merges = static_cast<int>(vocab_.pairs.size());
     int entry_pool_size = std::max(64, T_max * DNATOK_BPE_ENTRY_FACTOR);
     int bits_words = (num_merges + 31) >> 5;
-    ensure_workspace(B, T_max, num_merges, entry_pool_size, bits_words);
+    int excl_words = (T_max + 31) >> 5;
+    ensure_workspace(B, T_max, num_merges, entry_pool_size, bits_words,
+                     excl_words);
     int T_kernel = static_cast<int>(ws_tokens_.size(1));
     int E_kernel = static_cast<int>(ws_entry_pos_.size(1));
     int W_kernel = static_cast<int>(ws_bucket_bits_.size(1));
+    int X_kernel = static_cast<int>(ws_excl_bits_.size(1));
     ws_tokens_.narrow(0, 0, B).narrow(1, 0, T_max).zero_();
 
     auto tokens_buf    = ws_tokens_.narrow(0, 0, B);
@@ -857,6 +908,7 @@ public:
     auto scratch_buf    = ws_scratch_.narrow(0, 0, B);
     auto overflow_buf   = ws_overflow_.narrow(0, 0, B);
     auto bits_buf       = ws_bucket_bits_.narrow(0, 0, B);
+    auto excl_buf       = ws_excl_bits_.narrow(0, 0, B);
     auto lengths_out    = ws_lengths_out_.narrow(0, 0, B);
 
     auto map_ref = map_->ref(cuco::find);
@@ -878,11 +930,13 @@ public:
         scratch_buf.data_ptr<std::int32_t>(),
         overflow_buf.data_ptr<std::int32_t>(),
         bits_buf.data_ptr<std::int32_t>(),
+        excl_buf.data_ptr<std::int32_t>(),
         lengths_out.data_ptr<std::int32_t>(),
         T_kernel,
         E_kernel,
         num_merges,
-        W_kernel);
+        W_kernel,
+        X_kernel);
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -899,7 +953,8 @@ private:
   // Workspace for the bucket-scheduling kernel. The entry
   // pool size E grows independently of T; for safety we size at
   // E = max(64, T_max * DNATOK_BPE_ENTRY_FACTOR). W = bits_words.
-  void ensure_workspace(int B, int T_max, int num_merges, int E, int W) {
+  void ensure_workspace(int B, int T_max, int num_merges, int E, int W,
+                        int X) {
     auto need_2d_int_T = [&](torch::Tensor& t) {
       if (!t.defined() || t.size(0) < B || t.size(1) < T_max) {
         int Bh = std::max(B, t.defined() ? static_cast<int>(t.size(0)) : 0);
@@ -934,6 +989,13 @@ private:
         t = torch::empty({Bh, Wh}, torch::dtype(torch::kInt32).device(torch::kCUDA));
       }
     };
+    auto need_2d_int_X = [&](torch::Tensor& t) {
+      if (!t.defined() || t.size(0) < B || t.size(1) < X) {
+        int Bh = std::max(B, t.defined() ? static_cast<int>(t.size(0)) : 0);
+        int Xh = std::max(X, t.defined() ? static_cast<int>(t.size(1)) : 0);
+        t = torch::empty({Bh, Xh}, torch::dtype(torch::kInt32).device(torch::kCUDA));
+      }
+    };
     need_2d_int_T(ws_tokens_);
     need_2d_int_T(ws_nxt_);
     need_2d_int_T(ws_prv_);
@@ -948,6 +1010,7 @@ private:
     need_2d_int_E(ws_scratch_);
     need_1d_int (ws_overflow_);
     need_2d_int_W(ws_bucket_bits_);
+    need_2d_int_X(ws_excl_bits_);
     need_1d_int (ws_lengths_out_);
   }
 
@@ -970,6 +1033,7 @@ private:
   torch::Tensor ws_scratch_;      // int32 [Bcap, Tcap]
   torch::Tensor ws_overflow_;     // int32 [Bcap]
   torch::Tensor ws_bucket_bits_;  // int32 [Bcap, ceil(num_merges/32)]
+  torch::Tensor ws_excl_bits_;    // int32 [Bcap, ceil(T_max/32)]
   torch::Tensor ws_lengths_out_;  // int32 [Bcap]
 };
 
