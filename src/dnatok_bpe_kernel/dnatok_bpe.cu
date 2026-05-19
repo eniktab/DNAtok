@@ -558,13 +558,13 @@ __global__ void bpe_kernel(
       tk[p] = new_tok;
       nx[p] = ool;
       nx[old_next] = DEAD_POS;
-    }
-    __syncthreads();
-
-    for (int i = tid; i < n_sel; i += nthr) {
-      int p = sc[i];
-      int nn = nx[p];
-      if (nn != NIL_POS) pv[nn] = p;
+      // Pass 2 (prv update) is fused here. Different selected positions
+      // write to disjoint addresses: thread for p writes prv[ool] where
+      // ool = nx[nx[p]] is two positions to the right of p (in the
+      // pre-merge DLL). Non-overlap filter guarantees no two selected
+      // positions are DLL-adjacent, so their ool values are also
+      // disjoint. Saves one __syncthreads per outer-loop iteration.
+      if (ool != NIL_POS) pv[ool] = p;
     }
     __syncthreads();
 
