@@ -206,3 +206,15 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Runtime / agent state (not source)
+ptxas_log.txt
+.agents/
+
+# Local override for cluster config
+benchmarks/hpc_model_config.local.yaml
+
+# Working artefacts — paper drafts + bench output stay local
+paper_content/
+results_hpc/
+.agents/
