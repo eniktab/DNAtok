@@ -196,6 +196,44 @@ static constexpr std::int32_t DEAD_POS = -2;
 #define DNATOK_BPE_ITEMS_PER_THREAD 16
 #endif
 
+// Block-wide min reduction with warp-shuffle fast-path.
+//
+// Input  : per-thread value (local_min).
+// Output : the block-wide minimum, broadcast to all threads.
+// Uses sh_red as scratch; assumes blockDim.x is a power of two ≥ 32.
+//
+// vs the straight halving-stride pattern, this saves __syncthreads on the
+// last 5 reduction levels (intra-warp) which adds up over the hundreds of
+// outer-loop iterations a long sequence produces. The shuffle-based final
+// reduction is also a single 5-instruction sequence instead of an explicit
+// loop.
+__device__ inline int block_min_reduce(int local_min, int* sh_red) {
+  const int tid  = threadIdx.x;
+  const int nthr = blockDim.x;
+  sh_red[tid] = local_min;
+  __syncthreads();
+  // Cross-warp halving down to one value per warp (32 values).
+  for (int stride = nthr / 2; stride >= 32; stride >>= 1) {
+    if (tid < stride) {
+      int a = sh_red[tid], b = sh_red[tid + stride];
+      if (b < a) sh_red[tid] = b;
+    }
+    __syncthreads();
+  }
+  // Intra-warp shuffle reduction over the first 32 lanes.
+  int v = (tid < 32) ? sh_red[tid] : 0x7FFFFFFF;
+  v = min(v, __shfl_xor_sync(0xFFFFFFFF, v, 16));
+  v = min(v, __shfl_xor_sync(0xFFFFFFFF, v, 8));
+  v = min(v, __shfl_xor_sync(0xFFFFFFFF, v, 4));
+  v = min(v, __shfl_xor_sync(0xFFFFFFFF, v, 2));
+  v = min(v, __shfl_xor_sync(0xFFFFFFFF, v, 1));
+  // Lane 0 of warp 0 has the min; publish via shared memory and
+  // broadcast.
+  if (tid == 0) sh_red[0] = v;
+  __syncthreads();
+  return sh_red[0];
+}
+
 __global__ void bpe_kernel(
     PairMapRef                       map_ref,
     const std::uint8_t* __restrict__ d_bytes,
@@ -322,16 +360,8 @@ __global__ void bpe_kernel(
         if (candidate < local_min) local_min = candidate;
       }
     }
-    sh_red[tid] = local_min;
-    __syncthreads();
-    for (int stride = nthr / 2; stride > 0; stride >>= 1) {
-      if (tid < stride) {
-        int a = sh_red[tid], b = sh_red[tid + stride];
-        if (b < a) sh_red[tid] = b;
-      }
-      __syncthreads();
-    }
-    if (tid == 0) sh_cur_rank = (sh_red[0] < num_merges) ? sh_red[0] : num_merges;
+    int result = block_min_reduce(local_min, sh_red);
+    if (tid == 0) sh_cur_rank = (result < num_merges) ? result : num_merges;
     __syncthreads();
   }
 
@@ -423,16 +453,8 @@ __global__ void bpe_kernel(
           if (candidate < local_min) local_min = candidate;
         }
       }
-      sh_red[tid] = local_min;
-      __syncthreads();
-      for (int stride = nthr / 2; stride > 0; stride >>= 1) {
-        if (tid < stride) {
-          int a = sh_red[tid], b = sh_red[tid + stride];
-          if (b < a) sh_red[tid] = b;
-        }
-        __syncthreads();
-      }
-      if (tid == 0) sh_cur_rank = (sh_red[0] < num_merges) ? sh_red[0] : num_merges;
+      int result = block_min_reduce(local_min, sh_red);
+      if (tid == 0) sh_cur_rank = (result < num_merges) ? result : num_merges;
       __syncthreads();
       continue;
     }
@@ -645,16 +667,8 @@ __global__ void bpe_kernel(
         if (candidate < local_min) local_min = candidate;
       }
     }
-    sh_red[tid] = local_min;
-    __syncthreads();
-    for (int stride = nthr / 2; stride > 0; stride >>= 1) {
-      if (tid < stride) {
-        int a = sh_red[tid], b = sh_red[tid + stride];
-        if (b < a) sh_red[tid] = b;
-      }
-      __syncthreads();
-    }
-    if (tid == 0) sh_cur_rank = (sh_red[0] < num_merges) ? sh_red[0] : num_merges;
+    int result = block_min_reduce(local_min, sh_red);
+    if (tid == 0) sh_cur_rank = (result < num_merges) ? result : num_merges;
     __syncthreads();
   }
 

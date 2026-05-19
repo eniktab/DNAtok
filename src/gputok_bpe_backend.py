@@ -609,16 +609,21 @@ class GPUTokBPEBackend:
 
         # --- CPU fallback for sequences that would have chunked ---
         # We route these through the HF tokenizer to preserve correctness.
-        # Hand HF the *original* (un-normalized) string — HF re-applies the
-        # full normalizer + pre-tokenizer pipeline itself; passing our
-        # already-normalized version would double-apply (e.g. METAGENE
-        # would get "__seq" instead of "_seq").
+        # Hand HF the *original* (un-normalized) string — HF re-applies
+        # the full normalizer + pre-tokenizer pipeline itself; passing
+        # our already-normalized version would double-apply (e.g.
+        # METAGENE would get "__seq" instead of "_seq").
+        #
+        # Batch the fallback into ONE HF call rather than one call per
+        # sequence — the fast tokenizers parallelise across input
+        # strings internally, and we save the per-call Python overhead.
         if cpu_idx:
-            for src_i in cpu_idx:
-                ids = self.tokenizer(
-                    original_seqs[src_i],
-                    add_special_tokens=False,
-                )["input_ids"]
+            fallback_seqs = [original_seqs[i] for i in cpu_idx]
+            ids_batch = self.tokenizer(
+                fallback_seqs,
+                add_special_tokens=False,
+            )["input_ids"]
+            for src_i, ids in zip(cpu_idx, ids_batch):
                 per_seq_hf_ids[src_i] = [int(x) for x in ids]
 
         # Pad the per-sequence id lists into a [B, T_max] tensor.

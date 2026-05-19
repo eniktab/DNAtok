@@ -200,6 +200,7 @@ class DNATok:
         self.kmer_lut_offsets: Optional[np.ndarray] = None  # shape [5**k] int32
         self.kmer_lut_lengths: Optional[np.ndarray] = None  # shape [5**k] int16
         self.kmer_lut_flat: Optional[np.ndarray] = None  # flat list of token ids
+        self.kmer_single_char_lut: Optional[np.ndarray] = None  # [256] int64; per-byte single-char ids for the partial-k-mer tail
 
         # invalid/unknown token mapping
         self.id_unk: Optional[int] = None
@@ -935,6 +936,27 @@ class DNATok:
                 self.vocab_size = self._resolve_vocab_size(tok)
                 self.use_ids_path = True
 
+                # Build a single-character byte→id LUT for the partial-k-mer
+                # tail. HF tokenises trailing T%k bases as single-char
+                # tokens (e.g. NTv2: "A" → 4102, "C" → 4104). Probing
+                # them here lets the fast path accept inputs of any
+                # length, not just multiples of k.
+                try:
+                    self.kmer_single_char_lut = np.full(256, int(pad_id), dtype=np.int64)
+                    for ch in "ACGTN":
+                        sid = self._encode_char_to_single_id(tok, ch)
+                        if sid is None:
+                            self.kmer_single_char_lut = None
+                            break
+                        self.kmer_single_char_lut[ord(ch)] = int(sid)
+                        # Lowercase variants — some tokenisers map them to
+                        # the uppercase id, others have separate entries.
+                        sid_lc = self._encode_char_to_single_id(tok, ch.lower())
+                        if sid_lc is not None:
+                            self.kmer_single_char_lut[ord(ch.lower())] = int(sid_lc)
+                except Exception:
+                    self.kmer_single_char_lut = None
+
                 # Optional fixed token length hint
                 for name in ("model_max_length", "max_position_embeddings", "max_seq_len"):
                     v = getattr(self.embedder, name, None)
@@ -1312,9 +1334,24 @@ class DNATok:
         for s in seqs:
             if len(s) != T:
                 raise ValueError("All sequences in a batch must have equal length.")
-        if T % k != 0:
-            raise ValueError("Sequence length not divisible by k for K-mer path.")
-
+        # If T is not a multiple of k, we handle the trailing T%k bases as
+        # single-character tokens (mirroring HF's behaviour). This needs
+        # the single-char LUT we built during discover(); without it we
+        # bail to the slow path. We also bail when T < k (whole input is
+        # tail) because HF can compress consecutive-UNK runs into a
+        # single token in that regime — our per-char path can't.
+        tail_n = T % k
+        if tail_n != 0 and self.kmer_single_char_lut is None:
+            raise ValueError(
+                "Sequence length not divisible by k and no single-char "
+                "LUT available for the partial tail."
+            )
+        if T < k:
+            raise ValueError(
+                "Sequence length below k; HF may collapse to a single "
+                "UNK token. Slow-path handles this."
+            )
+        T_full = T - tail_n
         if self.normalize_case:
             buf = ("".join(seqs)).upper().encode("ascii", errors="replace")
         else:
@@ -1328,6 +1365,13 @@ class DNATok:
             arr = out.reshape(-1)
 
         B = len(seqs)
+        # Slice off the tail before the 5-base mapping; the tail is encoded
+        # via the single-char LUT below.
+        if tail_n:
+            arr_2d = arr.reshape(B, T)
+            arr_full = arr_2d[:, :T_full].reshape(-1)
+            arr_tail = arr_2d[:, T_full:]
+            arr = arr_full
         mapped = self.base5_lut[arr]
 
         invalid_mask = mapped < 0
@@ -1335,7 +1379,7 @@ class DNATok:
         invalid_seq_fallback = False
         invalid_kmer = None
         if np.any(invalid_mask):
-            invalid_seq_mask = invalid_mask.reshape(B, T).any(axis=1)
+            invalid_seq_mask = invalid_mask.reshape(B, T_full).any(axis=1)
             if self.handle_invalid_chars:
                 if self.kmer_invalid_policy == "replace_with_n":
                     mapped = mapped.copy()
@@ -1343,7 +1387,7 @@ class DNATok:
                 elif self.kmer_invalid_policy == "map_to_unk":
                     mapped = mapped.copy()
                     mapped[invalid_mask] = 0
-                    invalid_kmer = invalid_mask.reshape(B, T // k, k).any(axis=2)
+                    invalid_kmer = invalid_mask.reshape(B, T_full // k, k).any(axis=2)
                     if self.invalid_char_id is None:
                         invalid_seq_fallback = True
                 else:
@@ -1355,7 +1399,7 @@ class DNATok:
                 mapped = mapped.copy()
                 mapped[invalid_mask] = 4
 
-        mapped = mapped.reshape(B, T // k, k)
+        mapped = mapped.reshape(B, T_full // k, k)
         mapped = mapped.astype(np.int64)
         powers = np.power(5, np.arange(k - 1, -1, -1), dtype=np.int64)
         packed = np.dot(mapped, powers)
@@ -1364,6 +1408,11 @@ class DNATok:
         if invalid_kmer is not None and self.invalid_char_id is not None:
             ids = np.array(ids, copy=True)
             ids[invalid_kmer] = int(self.invalid_char_id)
+
+        # Append the trailing partial as single-char tokens (when T%k != 0).
+        if tail_n:
+            tail_ids = self.kmer_single_char_lut[arr_tail]  # [B, tail_n] int64
+            ids = np.concatenate([ids, tail_ids], axis=1)
 
         missing = ids < 0
         missing_rows = np.any(missing, axis=1) if missing.any() else np.zeros(B, dtype=bool)
@@ -1867,6 +1916,11 @@ class DNATok:
             # contract (legacy callers may have set padding_side="left").
             if self.bpe_backend is not None:
                 try:
+                    # The backend's GPU fast path keeps all work on the
+                    # device. Requesting device="cpu" forces the slow
+                    # path to allocate on CPU but still indexes via CUDA
+                    # tensors — much slower. So we ask for GPU then
+                    # transfer at the end.
                     ids_dev, mask_dev = self.bpe_backend.encode_batch(
                         seqs, device="cuda"
                     )
