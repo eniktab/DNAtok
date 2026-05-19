@@ -10,24 +10,24 @@ for the BPE tokenizers used in DNABERT-2, GENA-LM, METAGENE-1:
 
 Engines
 -------
-* **engine="gputok"** — stock GPUTOK BlockBPE-baseline kernel
+* **engine="gputok"** — stock third-party BlockBPE-baseline kernel
   (gpu-tokenizer/gputok_binding.cu, Apache 2.0). HF-exact for inputs
   whose normalised length fits in one chunk (chunk_tokens=2048);
-  longer sequences route to HF on the CPU side. Algorithm-1 with the
-  working buffer in shared memory.
+  longer sequences fall back to HF on the CPU side. Algorithm-1 with
+  the working buffer in shared memory.
 
-* **engine="dnatok"** — our own CUDA kernel (src/dnatok_bpe_kernel/).
-  Same Algorithm-1 semantics but the working buffer lives in global
-  memory (no chunk limit) and the inner loop is rank-batched: every
-  non-overlapping leftmost merge of the globally-lowest rank fires in
-  one parallel pass. Cuts outer-iteration count 3-5× over the naive
-  baseline. Long sequences (>2 kbp) still route to HF because the tail
-  of the merge schedule degenerates to ~1 merge/iter; replacing the
-  linear rank scan with a priority queue is the obvious next step.
+* **engine="dnatok"** — our entry-pool bucket-scheduling kernel
+  (src/dnatok_bpe_kernel/). HF Algorithm-1 semantics, no per-input
+  length cap, O(T log T) merge schedule. Wins on every measured BPE
+  tokeniser at standard / short / large-batch workloads (1.4-7.9×
+  vs HF native on GB10). Has a shape-aware fallback that routes long
+  inputs to HF when the batch is small enough that the one-block-per-
+  sequence design under-utilises the GPU; see ``encode_batch`` for the
+  heuristic.
 
 Both engines produce id streams that are bit-identical to HF native —
-asserted across 256 random sequences, N-content, mixed case, 4 kbp and
-8 kbp inputs in tests/test_gputok_bpe_backend.py.
+asserted across 256 random sequences, N-content, mixed case, 4 kbp
+and 8 kbp inputs in tests/test_gputok_bpe_backend.py.
 
 Three things that make HF compatibility work
 --------------------------------------------
@@ -366,16 +366,22 @@ class GPUTokBPEBackend:
     """HF-compatible GPU BPE encoder for genomic foundation models.
 
     See the module docstring for the architecture overview. In short:
-      * ``engine="gputok"``: third-party BlockBPE-baseline kernel.
-      * ``engine="dnatok"``: our own rank-batched kernel.
-    Both engines route sequences longer than 2 kbp to HF so the API
-    always returns HF-exact ids (validated by the strict gate).
+      * ``engine="gputok"`` — third-party BlockBPE-baseline kernel.
+      * ``engine="dnatok"`` — our entry-pool bucket-scheduling kernel
+                              (recommended default).
+
+    The ``gputok`` engine routes inputs longer than 2 kbp to HF.
+    ``dnatok`` has no algorithmic length cap and falls back to HF only
+    when the batch is small enough that the one-block-per-sequence GPU
+    design under-utilises the device — the routing heuristic is
+    documented inline in ``encode_batch``. Both paths are HF-exact
+    (validated by the strict bit-identical gate).
     """
 
     def __init__(self, hf_tokenizer: Any, *,
-                 engine: str = "gputok") -> None:
-        if engine not in ("gputok", "dnatok", "dnatok_v3"):
-            raise ValueError(f"engine must be 'gputok', 'dnatok', or 'dnatok_v3', got {engine!r}")
+                 engine: str = "dnatok") -> None:
+        if engine not in ("gputok", "dnatok"):
+            raise ValueError(f"engine must be 'gputok' or 'dnatok', got {engine!r}")
         self.tokenizer = hf_tokenizer
         self.engine = engine
 
@@ -402,12 +408,10 @@ class GPUTokBPEBackend:
         if self.engine == "gputok":
             self._gputok = _build_gputok_instance(self._merges_path)
             self._dnatok = None
-            self._dnatok_version = 1
-        else:  # "dnatok" or "dnatok_v3"
+        else:  # "dnatok"
             from dnatok_bpe_kernel import DnatokBpeKernel  # local import: build on first use
             self._gputok = None
             self._dnatok = DnatokBpeKernel(self._merges_path, max_iters=1024)
-            self._dnatok_version = 3 if self.engine == "dnatok_v3" else 1
 
         # Build the (gputok_id -> hf_id) remap LUT. Lookups via HF's
         # convert_tokens_to_ids (or vocab dict) work for every token GPUTOK
@@ -497,14 +501,32 @@ class GPUTokBPEBackend:
         # Length-based routing. Both engines use the same threshold for
         # different reasons (see the constants above); the gating logic
         # is therefore the same.
-        # v3 (entry-pool) has no length pathology — it processes long
-        # sequences in O(T log T) on the GPU. We disable the HF fallback
-        # for v3 entirely. v1 and gputok keep the 2-kbp HF-fallback gate.
-        if self.engine == "dnatok_v3":
-            threshold = float("inf")
-        elif self.engine == "dnatok":
-            threshold = _DNATOK_FAST_LIMIT
-        else:
+        # v3 (entry-pool) has no length pathology algorithmically — it
+        # processes long sequences in O(T log T) on the GPU. But the
+        # one-block-per-sequence design under-utilises the GPU when B is
+        # small: at B=2 on a 144-SM device, only 2 SMs are doing work.
+        # In that regime HF CPU parallelism wins on tokenisers with a
+        # non-trivial merge table.
+        #
+        # Routing heuristic uses (B, num_merges) — both are known at this
+        # point:
+        #   * Small merge table (< 2k merges, e.g. METAGENE-1): per-iter
+        #     cost on the kernel is low; it stays competitive even at
+        #     small B and moderate T. Only fall back when both B and T
+        #     are extreme.
+        #   * Large merge table (>= 2k merges, e.g. DNABERT-2 / GENA-LM):
+        #     per-iter scan cost dominates at small B. Fall back to HF
+        #     at 2 kbp.
+        if self.engine == "dnatok":
+            n_merges = len(self._merges)
+            B_eff = len(norm_seqs)
+            if B_eff < 16 and n_merges >= 2000:
+                threshold = _DNATOK_FAST_LIMIT  # 2 kbp
+            elif B_eff < 4 and n_merges < 2000:
+                threshold = 16384               # ultra-long only
+            else:
+                threshold = float("inf")
+        else:  # gputok
             threshold = _GPUTOK_SAFE_CHUNK
         fits = [len(s) <= threshold for s in norm_seqs]
         gpu_idx = [i for i, ok in enumerate(fits) if ok]
@@ -521,8 +543,8 @@ class GPUTokBPEBackend:
         # output without ever touching the CPU side. This skips the
         # tolist() / pad / re-upload round-trip that dominates the slow path
         # on large batches (~3-10 ms on B=256 standard scenarios).
-        if self.engine in ("dnatok", "dnatok_v3") and not cpu_idx and gpu_idx:
-            ids_dev, lens_dev = self._dnatok.tokenize_batch(norm_seqs, version=self._dnatok_version)
+        if self.engine == "dnatok" and not cpu_idx and gpu_idx:
+            ids_dev, lens_dev = self._dnatok.tokenize_batch(norm_seqs)
             if self._remap_cuda is None or self._remap_cuda.device != dev:
                 self._remap_cuda = self._remap_cpu.to(dev)
             ids_hf_dev = self._remap_cuda[ids_dev.long()]  # int64 [B, T_kernel]
@@ -550,7 +572,7 @@ class GPUTokBPEBackend:
         # --- GPU path for sequences that fit in the engine's GPU budget ---
         # gputok engine: BlockBPE-baseline kernel (Algorithm 1, leftmost
         # merge of the globally lowest-rank pair, one merge per iter).
-        # dnatok engine: our rank-batched Algorithm-1 kernel.
+        # dnatok engine: our entry-pool bucket-scheduling kernel.
         # Both produce internal vocab ids; we apply the (kernel_id → hf_id)
         # remap LUT before writing into per_seq_hf_ids.
         per_seq_hf_ids: List[List[int]] = [[] for _ in range(B)]
@@ -566,13 +588,13 @@ class GPUTokBPEBackend:
                         per_seq_hf_ids[src_i] = remap_cpu_np[row].tolist()
                     else:
                         per_seq_hf_ids[src_i] = []
-            else:  # engine in ("dnatok", "dnatok_v3")
+            else:  # engine == "dnatok"
                 # The DNA kernel returns tensors directly on the GPU. Remap
                 # on the device too — no CPU-side fanout, no Python lists.
                 # Kernel zero-fills the output tensor's tail (positions
                 # beyond each sequence's length) so remap-LUT indexing
                 # never reads stale workspace data.
-                ids_dev, lens_dev = self._dnatok.tokenize_batch(sub, version=self._dnatok_version)
+                ids_dev, lens_dev = self._dnatok.tokenize_batch(sub)
                 if self._remap_cuda is None or self._remap_cuda.device != dev:
                     self._remap_cuda = self._remap_cpu.to(dev)
                 ids_hf_dev = self._remap_cuda[ids_dev.long()]

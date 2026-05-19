@@ -1028,8 +1028,8 @@ class DNATok:
 
         # ---- BPE backend opt-in --------------------------------------
         # If the LUT/k-mer fast paths are unavailable and the tokenizer is
-        # a supported genomic BPE (DNABERT-2 / GENA-LM / METAGENE-1), try
-        # to build the GPU BPE backend. Failure here is non-fatal — we
+        # a supported genomic BPE (DNABERT-2 / GENA-LM / METAGENE-1),
+        # build the GPU BPE backend. Failure here is non-fatal — we
         # leave bpe_backend=None and the standard HF-tokenizer fallback
         # in encode_batch_to_ids handles the model just like before.
         if not self.use_ids_path and tok is not None:

@@ -46,9 +46,9 @@ REQUIRES_GPUTOK = pytest.mark.skipif(not _gputok_available(),
 
 
 BPE_MODELS = ["DNABERT2_117M", "GENA_LM_BERT_t2t", "METAGENE_1"]
-# Engines: "gputok" = third-party BlockBPE baseline; "dnatok" = our Phase 2
-# rank-batched kernel; "dnatok_v3" = our Phase 3 entry-pool kernel.
-ENGINES = ["gputok", "dnatok", "dnatok_v3"]
+# Engines: "gputok" = third-party BlockBPE baseline; "dnatok" = our
+# entry-pool bucket-scheduling kernel.
+ENGINES = ["gputok", "dnatok"]
 
 
 def _build_backend(model_name: str, engine: str = "gputok"):
@@ -63,7 +63,7 @@ def _build_backend(model_name: str, engine: str = "gputok"):
     try:
         backend = GPUTokBPEBackend(tok, engine=engine)
     except Exception as e:
-        if engine in ("dnatok", "dnatok_v3"):
+        if engine == "dnatok":
             pytest.skip(f"{engine} kernel not buildable here: {e}")
         raise
     return backend, tok

@@ -108,44 +108,28 @@ class DnatokBpeKernel:
         return self._impl.id_to_token(int(idx))
 
     def tokenize_batch(self, texts: List[str],
-                        *, clone: bool = False,
-                        version: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
+                        *, clone: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode a batch of strings.
 
         Args:
             texts: list of input strings (raw byte sequences).
             clone: if True, return independent tensors (not views into the
                 workspace cache).
-            version: which kernel to dispatch to.
-                * 1 = Phase 2 rank-batched (default — bit-identical to HF,
-                  fast on inputs ≤ ~2 kbp).
-                * 3 = Phase 3 entry-pool bucket scheduling (bit-identical
-                  to HF, intended for long inputs).
-                Version 2 was the buggy first Phase-3 attempt; it is
-                wired up but should never be selected.
 
         Returns:
-            ids: int32 CUDA tensor [B, T_max], padded to 0 in positions
+            ids: int32 CUDA tensor [B, T_max], zero-filled in positions
                  ≥ lengths[b].
             lengths: int32 CUDA tensor [B]. lengths[b] = -1 if the input
-                 exceeded T_max; lengths[b] = -2 if v3's entry pool
-                 overflowed (kernel-internal safety — caller should
-                 increase DNATOK_V3_ENTRY_FACTOR or fall back to v1).
+                 exceeded T_max; lengths[b] = -2 if the kernel's entry
+                 pool overflowed (raise DNATOK_BPE_ENTRY_FACTOR if hit).
 
         IMPORTANT — caching contract:
             Unless ``clone=True``, the returned tensors are NARROW VIEWS
-            into the kernel's persistent workspace cache. The next call to
-            ``tokenize_batch`` on this instance will OVERWRITE the
+            into the kernel's persistent workspace cache. The next call
+            to ``tokenize_batch`` on this instance will OVERWRITE the
             underlying storage.
         """
-        if version == 1:
-            ids, lens = self._impl.tokenize_batch(list(texts))
-        elif version == 3:
-            ids, lens = self._impl.tokenize_batch_v3(list(texts))
-        elif version == 2:
-            ids, lens = self._impl.tokenize_batch_v2(list(texts))
-        else:
-            raise ValueError(f"DnatokBpeKernel: unsupported version={version}")
+        ids, lens = self._impl.tokenize_batch(list(texts))
         if clone:
             ids = ids.clone()
             lens = lens.clone()

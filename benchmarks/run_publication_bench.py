@@ -323,8 +323,6 @@ def bytes_h2d_for_method(method: str, sc: Scenario) -> int:
         return B * ((T + 3) // 4)  # 2-bit packed; uint8 only changes device-side dtype
     if method == "dnatok_fused_triton":
         return B * T * 1
-    if method == "dnatok_dna_kernel_v3":
-        return sc.batch_size * sc.seq_len
     if method == "dnatok_gputok_bpe":
         return B * T * 1  # raw bytes (one ASCII char per base) shipped to GPUTOK
     if method == "dnatok_dna_kernel":
@@ -385,9 +383,8 @@ def encode_phase(
     #                        because the merge loop is O(T²) — HF Rust's
     #                        priority queue wins there.
     if GPUTokBPEBackend is not None and GPUTokBPEBackend.is_supported(adapter.tokenizer):
-        for eng, method_name in (("gputok",    "dnatok_gputok_bpe"),
-                                  ("dnatok",    "dnatok_dna_kernel"),
-                                  ("dnatok_v3", "dnatok_dna_kernel_v3")):
+        for eng, method_name in (("gputok", "dnatok_gputok_bpe"),
+                                  ("dnatok", "dnatok_dna_kernel")):
             try:
                 backend = GPUTokBPEBackend(adapter.tokenizer, engine=eng)
                 def _enc(b=backend):
@@ -510,11 +507,10 @@ def e2e_phase(
     out.append(trial("dnatok_default", name, sc, "e2e", dn_e2e_default, device=device, warmup=warmup, iters=iters,
                      bytes_h2d=bytes_h2d_for_method("dnatok_default", sc)))
 
-    # GPU BPE e2e for genomic BPE tokenizers — same three backends as encode_phase.
+    # GPU BPE e2e for genomic BPE tokenizers — same two backends as encode_phase.
     if GPUTokBPEBackend is not None and GPUTokBPEBackend.is_supported(adapter.tokenizer):
-        for eng, method_name in (("gputok",    "dnatok_gputok_bpe"),
-                                  ("dnatok",    "dnatok_dna_kernel"),
-                                  ("dnatok_v3", "dnatok_dna_kernel_v3")):
+        for eng, method_name in (("gputok", "dnatok_gputok_bpe"),
+                                  ("dnatok", "dnatok_dna_kernel")):
             try:
                 backend = GPUTokBPEBackend(adapter.tokenizer, engine=eng)
                 def _e2e(b=backend):
