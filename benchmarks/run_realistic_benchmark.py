@@ -94,11 +94,19 @@ _N_RATE_NANOPORE = 0.02
 
 
 def _gen_dna(L: int, rng: random.Random, *, n_rate: float = 0.0,
-             gc_bias: bool = False) -> str:
-    """Draw a single DNA sequence of length L."""
+             gc_bias: bool = False,
+             custom_weights: Optional[Tuple[float, ...]] = None) -> str:
+    """Draw a single DNA sequence of length L.
+
+    custom_weights: optional (A, C, G, T) weights to override the
+    gc_bias / balanced defaults. Used by the GC-content scenarios.
+    """
     if L <= 0:
         return ""
-    weights = _DNA_WEIGHTS_HUMAN_GC41 if gc_bias else _DNA_WEIGHTS_BALANCED
+    if custom_weights is not None:
+        weights = custom_weights
+    else:
+        weights = _DNA_WEIGHTS_HUMAN_GC41 if gc_bias else _DNA_WEIGHTS_BALANCED
     s = rng.choices(_DNA_BASES, weights=weights, k=L)
     if n_rate > 0.0:
         # Sprinkle Ns at random positions.
@@ -106,6 +114,26 @@ def _gen_dna(L: int, rng: random.Random, *, n_rate: float = 0.0,
         for _ in range(nN):
             s[rng.randrange(L)] = "N"
     return "".join(s)
+
+
+def _gen_poly_a(L: int, rng: random.Random, *, polya_len: int = 200) -> str:
+    """Generate a sequence with a poly-A stretch embedded in random DNA.
+    Mirrors mRNA poly-A tails / microsatellites — important edge case
+    because every adjacent (A,A) pair maps to the same low rank, so the
+    BPE schedule sees a long run of same-rank merges.
+    """
+    if L <= 0:
+        return ""
+    polya = "A" * min(polya_len, L)
+    if L <= polya_len:
+        return polya
+    # Random GC-biased flanks around the polyA.
+    flank_total = L - polya_len
+    left_n = rng.randint(0, flank_total)
+    right_n = flank_total - left_n
+    left = "".join(rng.choices(_DNA_BASES, weights=_DNA_WEIGHTS_HUMAN_GC41, k=left_n))
+    right = "".join(rng.choices(_DNA_BASES, weights=_DNA_WEIGHTS_HUMAN_GC41, k=right_n))
+    return left + polya + right
 
 
 @dataclass
@@ -116,14 +144,25 @@ class WorkloadScenario:
     length_sampler: Callable[[random.Random], int]
     n_rate: float = 0.0
     gc_bias: bool = False
+    # Override (A, C, G, T) sampling weights for GC-content scenarios.
+    custom_weights: Optional[Tuple[float, float, float, float]] = None
+    # If set, use this dedicated per-sequence generator instead of the
+    # default (length_sampler + _gen_dna).
+    seq_generator: Optional[Callable[[int, random.Random], str]] = None
 
     def generate(self, seed: int = 0) -> List[str]:
         rng = random.Random(seed)
-        return [
-            _gen_dna(self.length_sampler(rng), rng,
-                     n_rate=self.n_rate, gc_bias=self.gc_bias)
-            for _ in range(self.n_reads)
-        ]
+        seqs: List[str] = []
+        for _ in range(self.n_reads):
+            L = self.length_sampler(rng)
+            if self.seq_generator is not None:
+                seqs.append(self.seq_generator(L, rng))
+            else:
+                seqs.append(_gen_dna(L, rng,
+                                      n_rate=self.n_rate,
+                                      gc_bias=self.gc_bias,
+                                      custom_weights=self.custom_weights))
+        return seqs
 
     def length_stats(self, seqs: List[str]) -> Dict[str, float]:
         lens = np.array([len(s) for s in seqs], dtype=np.int64)
@@ -198,6 +237,38 @@ def _make_scenarios() -> List[WorkloadScenario]:
             n_rate=0.005,
             gc_bias=True,
         ),
+        # GC-content sweep — different organisms have very different
+        # GC%. M. tuberculosis ~65%, P. falciparum (malaria) ~20%,
+        # human ~41%, E. coli ~50%. The fast paths must be GC-agnostic.
+        WorkloadScenario(
+            name="gc_low_20",
+            description="AT-rich genome (e.g. Plasmodium, ~20% GC). "
+                        "n=2000 reads at 1 kbp.",
+            n_reads=2000,
+            length_sampler=lambda r: 1000,
+            n_rate=0.0,
+            custom_weights=(40, 10, 10, 40),  # A,C,G,T → 20% GC
+        ),
+        WorkloadScenario(
+            name="gc_high_65",
+            description="GC-rich genome (e.g. Mycobacterium, ~65% GC). "
+                        "n=2000 reads at 1 kbp.",
+            n_reads=2000,
+            length_sampler=lambda r: 1000,
+            n_rate=0.0,
+            custom_weights=(17.5, 32.5, 32.5, 17.5),  # 65% GC
+        ),
+        # Special bio patterns — common in real DNA, can hit edge cases
+        # in any tokeniser that exploits frequency assumptions.
+        WorkloadScenario(
+            name="repeats_polyA",
+            description="Low-complexity poly-A runs (e.g. mRNA poly-A "
+                        "tail, microsatellites). n=1000 reads at 1 kbp, "
+                        "each containing a 200-bp poly-A stretch.",
+            n_reads=1000,
+            length_sampler=lambda r: 1000,
+            seq_generator=lambda L, r: _gen_poly_a(L, r, polya_len=200),
+        ),
     ]
 
 
@@ -270,7 +341,7 @@ class TrialResult:
     model: str
     model_class: str
     scenario: str
-    method: str             # hf_native | dnatok
+    method: str             # hf_native | hf_native_mt | dnatok | gputok_baseline
     chunk: int              # batch size used for the tokeniser calls
     p50_ms: float           # whole-scenario p50 wall-clock
     p25_ms: float
@@ -282,6 +353,8 @@ class TrialResult:
     total_bases: int
     seqs_per_s: float
     bases_per_s: float
+    peak_gpu_mem_mb: float = 0.0  # 0.0 = CPU-only method
+    cold_start_ms: float = 0.0     # first call (cold) wall-clock
     notes: str = ""
 
 
@@ -293,6 +366,34 @@ def _classify(name: str) -> str:
     return "LUT-char"
 
 
+def _time_cold(fn: Callable[[], None]) -> float:
+    """Time a single first call (cold). Resets CUDA memory stats around it."""
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+    t0 = time.perf_counter()
+    fn()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    return (time.perf_counter() - t0) * 1000.0
+
+
+def _peak_gpu_mem_mb() -> float:
+    """Peak CUDA allocated memory (MB) since last reset."""
+    if not torch.cuda.is_available():
+        return 0.0
+    return torch.cuda.max_memory_allocated() / (1024.0 ** 2)
+
+
+def _set_rayon_threads(n: int) -> None:
+    """HuggingFace fast tokenizers parallelise across input strings via
+    a Rust thread pool whose width is controlled by RAYON_NUM_THREADS.
+    Setting this enables fair comparison against a multi-threaded HF
+    baseline (1 thread = single-core baseline; N threads = scaling)."""
+    os.environ["RAYON_NUM_THREADS"] = str(n)
+    os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
+
 def _run_scenario(
     model_name: str,
     scenario: WorkloadScenario,
@@ -302,6 +403,8 @@ def _run_scenario(
     warmup: int,
     iters: int,
     device: torch.device,
+    hf_threads: List[int],
+    include_gputok: bool,
     log,
 ) -> List[TrialResult]:
     spec = next((s for s in MODEL_SPECS if s.name == model_name), None)
@@ -321,49 +424,108 @@ def _run_scenario(
         log(f"  {model_name}: DNATok discover failed: {e}")
         return []
 
+    # Try to also stand up a GPUTOK-baseline backend for BPE models —
+    # the same code path as DNAtok but with the engine flag flipped to
+    # the third-party BlockBPE-baseline kernel.
+    gputok_backend = None
+    if include_gputok and GPUTokBPEBackend is not None:
+        try:
+            if GPUTokBPEBackend.is_supported(hf):
+                gputok_backend = GPUTokBPEBackend(hf, engine="gputok")
+        except Exception:
+            gputok_backend = None
+
     cls = _classify(model_name)
     stats = scenario.length_stats(seqs)
     results: List[TrialResult] = []
 
     for chunk in chunks:
-        def _hf():
-            _process_in_chunks(seqs, chunk,
-                                lambda batch: hf(batch, padding=True,
-                                                 return_tensors="pt"))
+        # 1. HF baselines at varying thread counts.
+        for n_threads in hf_threads:
+            _set_rayon_threads(n_threads)
 
+            def _hf():
+                _process_in_chunks(seqs, chunk,
+                                    lambda batch: hf(batch, padding=True,
+                                                     return_tensors="pt"))
+
+            try:
+                cold = _time_cold(_hf)
+                t = _time_total(_hf, warmup=warmup, iters=iters)
+            except Exception as e:
+                log(f"  {model_name}/{scenario.name}/HF[chunk={chunk},t={n_threads}]: "
+                    f"{type(e).__name__}: {e}")
+                continue
+
+            label = "hf_native" if n_threads == 1 else f"hf_native_t{n_threads}"
+            results.append(TrialResult(
+                model=model_name, model_class=cls, scenario=scenario.name,
+                method=label, chunk=chunk,
+                p50_ms=t["p50"], p25_ms=t["p25"], p75_ms=t["p75"],
+                min_ms=t["min"], max_ms=t["max"], mean_ms=t["mean"],
+                n_reads=stats["n"], total_bases=stats["total_bases"],
+                seqs_per_s=1000.0 * stats["n"] / t["p50"],
+                bases_per_s=1000.0 * stats["total_bases"] / t["p50"],
+                peak_gpu_mem_mb=0.0,
+                cold_start_ms=cold,
+                notes=f"RAYON_NUM_THREADS={n_threads}",
+            ))
+
+        # 2. Optional: BlockBPE-style GPUTOK baseline.
+        if gputok_backend is not None:
+            def _gpu_baseline():
+                _process_in_chunks(seqs, chunk,
+                                    lambda batch: gputok_backend.encode_batch(
+                                        batch, device="cuda"))
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.reset_peak_memory_stats()
+                cold = _time_cold(_gpu_baseline)
+                t = _time_total(_gpu_baseline, warmup=warmup, iters=iters)
+                peak = _peak_gpu_mem_mb()
+            except Exception as e:
+                log(f"  {model_name}/{scenario.name}/GPUTOK[chunk={chunk}]: "
+                    f"{type(e).__name__}: {e}")
+                t = None
+            if t is not None:
+                results.append(TrialResult(
+                    model=model_name, model_class=cls, scenario=scenario.name,
+                    method="gputok_baseline", chunk=chunk,
+                    p50_ms=t["p50"], p25_ms=t["p25"], p75_ms=t["p75"],
+                    min_ms=t["min"], max_ms=t["max"], mean_ms=t["mean"],
+                    n_reads=stats["n"], total_bases=stats["total_bases"],
+                    seqs_per_s=1000.0 * stats["n"] / t["p50"],
+                    bases_per_s=1000.0 * stats["total_bases"] / t["p50"],
+                    peak_gpu_mem_mb=peak,
+                    cold_start_ms=cold,
+                    notes="engine=gputok (BlockBPE-style baseline kernel)",
+                ))
+
+        # 3. DNATok (our kernel).
         def _bk():
             _process_in_chunks(seqs, chunk,
                                 lambda batch: dna.encode_batch_to_ids(batch))
-
         try:
-            t_hf = _time_total(_hf, warmup=warmup, iters=iters)
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+            cold = _time_cold(_bk)
+            t = _time_total(_bk, warmup=warmup, iters=iters)
+            peak = _peak_gpu_mem_mb()
         except Exception as e:
-            log(f"  {model_name}/{scenario.name}/HF[chunk={chunk}]: {type(e).__name__}: {e}")
+            log(f"  {model_name}/{scenario.name}/DNATok[chunk={chunk}]: "
+                f"{type(e).__name__}: {e}")
             continue
-        try:
-            t_bk = _time_total(_bk, warmup=warmup, iters=iters)
-        except Exception as e:
-            log(f"  {model_name}/{scenario.name}/DNATok[chunk={chunk}]: {type(e).__name__}: {e}")
-            continue
-
-        for label, t in (("hf_native", t_hf), ("dnatok", t_bk)):
-            results.append(TrialResult(
-                model=model_name,
-                model_class=cls,
-                scenario=scenario.name,
-                method=label,
-                chunk=chunk,
-                p50_ms=t["p50"],
-                p25_ms=t["p25"],
-                p75_ms=t["p75"],
-                min_ms=t["min"],
-                max_ms=t["max"],
-                mean_ms=t["mean"],
-                n_reads=stats["n"],
-                total_bases=stats["total_bases"],
-                seqs_per_s=1000.0 * stats["n"] / t["p50"],
-                bases_per_s=1000.0 * stats["total_bases"] / t["p50"],
-            ))
+        results.append(TrialResult(
+            model=model_name, model_class=cls, scenario=scenario.name,
+            method="dnatok", chunk=chunk,
+            p50_ms=t["p50"], p25_ms=t["p25"], p75_ms=t["p75"],
+            min_ms=t["min"], max_ms=t["max"], mean_ms=t["mean"],
+            n_reads=stats["n"], total_bases=stats["total_bases"],
+            seqs_per_s=1000.0 * stats["n"] / t["p50"],
+            bases_per_s=1000.0 * stats["total_bases"] / t["p50"],
+            peak_gpu_mem_mb=peak,
+            cold_start_ms=cold,
+        ))
     return results
 
 
@@ -383,6 +545,15 @@ def main() -> int:
     ap.add_argument("--scenarios", type=str, nargs="+", default=None,
                     help="Scenario-name filter; defaults to all.")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--hf-threads", type=int, nargs="+", default=[1],
+                    help="HF Rust-tokeniser thread counts to bench "
+                         "(via RAYON_NUM_THREADS). E.g. '1 4 8' for "
+                         "single, 4-thread, and 8-thread baselines.")
+    ap.add_argument("--include-gputok", action="store_true", default=False,
+                    help="Also bench the third-party BlockBPE-style "
+                         "kernel (engine='gputok' inside our backend) "
+                         "for BPE models. Apples-to-apples GPU "
+                         "tokeniser comparison.")
     args = ap.parse_args()
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -434,12 +605,17 @@ def main() -> int:
             res = _run_scenario(model_name, sc, seqs,
                                 chunks=args.chunks,
                                 warmup=args.warmup, iters=args.iters,
-                                device=device, log=log)
+                                device=device,
+                                hf_threads=args.hf_threads,
+                                include_gputok=args.include_gputok,
+                                log=log)
             for r in res:
-                log(f"    {r.method:<10} chunk={r.chunk:<4} "
+                mem = f" mem={r.peak_gpu_mem_mb:>5.1f}MB" if r.peak_gpu_mem_mb > 0 else ""
+                log(f"    {r.method:<20} chunk={r.chunk:<4} "
                     f"p50={r.p50_ms:>8.2f}ms  "
                     f"{r.seqs_per_s:>10.1f} seq/s  "
-                    f"{r.bases_per_s/1e6:>7.2f} Mbase/s")
+                    f"{r.bases_per_s/1e6:>7.2f} Mbase/s"
+                    f"{mem}  cold={r.cold_start_ms:>7.1f}ms")
             all_results.extend(res)
 
     # Persist CSV + JSON.
