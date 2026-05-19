@@ -367,8 +367,11 @@ __global__ void bpe_kernel(
 
   while (sh_cur_rank < num_merges) {
     int R = sh_cur_rank;
+    // Reset sh_min_insert. No explicit __syncthreads here: only thread 0
+    // writes this value, and the next reader is the atomicMin in step
+    // 3e — there are 4 intervening __syncthreads (between steps 3a, 3b,
+    // 3c, 3d) which guarantee visibility before the atomic is issued.
     if (tid == 0) sh_min_insert = num_merges;
-    __syncthreads();
 
     // Step 3a: drain bucket R, collect positions into scratch, validate
     // in parallel. The linked-list walk is unavoidably sequential, but
