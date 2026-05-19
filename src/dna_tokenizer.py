@@ -1428,6 +1428,63 @@ class DNATok:
 
         return ids, fallback_mask
 
+    def _encode_batch_kmer_variable_length(
+        self, seqs: List[str]
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """K-mer fast path for batches whose sequences differ in length.
+
+        Groups sequences by exact length, processes each homogeneous
+        group through ``_encode_batch_kmer_numpy_partial`` (which
+        requires equal length within a call), then assembles the results
+        back into the original-order, pad-right tensor.
+
+        For realistic workloads (Illumina reads at ~150 ± 30 bp, etc.)
+        there are far fewer unique lengths than sequences, so each
+        length-group still benefits from numpy vectorisation. For very
+        short sequences (T < k) the existing equal-length path bails
+        with ValueError — we catch that and mark those specific
+        sequences for HF fallback via the returned ``fallback_mask``.
+
+        Returns: (ids_np[B, max_token_len] int64,
+                  fallback_mask[B] bool — True for sequences that
+                                          need HF fallback).
+        """
+        from collections import defaultdict
+
+        by_len: Dict[int, List[int]] = defaultdict(list)
+        for i, s in enumerate(seqs):
+            by_len[len(s)].append(i)
+
+        per_seq_ids: List[Optional[List[int]]] = [None] * len(seqs)
+        fallback_mask = np.zeros(len(seqs), dtype=bool)
+
+        for L, indices in by_len.items():
+            sub_seqs = [seqs[i] for i in indices]
+            try:
+                sub_ids, sub_fb = self._encode_batch_kmer_numpy_partial(sub_seqs)
+            except ValueError:
+                # The equal-length path bails for T < k (HF compresses
+                # all-UNK runs to one token there); route those
+                # sequences through HF.
+                for src_i in indices:
+                    fallback_mask[src_i] = True
+                continue
+            for local_i, src_i in enumerate(indices):
+                per_seq_ids[src_i] = sub_ids[local_i].tolist()
+                if sub_fb[local_i]:
+                    fallback_mask[src_i] = True
+
+        max_len = max((len(x) for x in per_seq_ids if x is not None),
+                       default=0)
+        if max_len == 0:
+            return np.zeros((len(seqs), 0), dtype=np.int64), fallback_mask
+
+        out = np.full((len(seqs), max_len), int(self.id_pad), dtype=np.int64)
+        for i, ids_row in enumerate(per_seq_ids):
+            if ids_row:
+                out[i, : len(ids_row)] = ids_row
+        return out, fallback_mask
+
     # ------------------------------ Encoding -------------------------------
 
     def _normalize_and_clean_seqs(self, seqs: List[str]) -> List[str]:
@@ -1954,7 +2011,22 @@ class DNATok:
 
         if self.kmer_k is not None:
             try:
-                ids_np, fallback_mask = self._encode_batch_kmer_numpy_partial(seqs)
+                # The equal-length fast path requires all sequences in
+                # the batch to be the same length. Real workloads
+                # (Illumina reads at ~150 ± 30 bp, varied gene models,
+                # etc.) usually fail this; route to the length-group
+                # dispatcher in that case, which still uses numpy
+                # vectorisation per group.
+                same_len = True
+                first_len = len(seqs[0])
+                for s in seqs:
+                    if len(s) != first_len:
+                        same_len = False
+                        break
+                if same_len:
+                    ids_np, fallback_mask = self._encode_batch_kmer_numpy_partial(seqs)
+                else:
+                    ids_np, fallback_mask = self._encode_batch_kmer_variable_length(seqs)
                 ids_np = self._maybe_pad(ids_np)
                 if fallback_mask.any():
                     return self._merge_kmer_fallback(
