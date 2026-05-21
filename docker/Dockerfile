@@ -49,7 +49,7 @@ COPY LICENSE              /work/LICENSE
 # (Apache-2.0) at a known-good commit at image-build time. The image
 # is still self-contained at runtime — no network access needed
 # during inference; only at build.
-ARG GPU_TOKENIZER_REPO=https://github.com/gpu-tokenizer/gpu-tokenizer
+ARG GPU_TOKENIZER_REPO=https://github.com/venugopalkadamba/gpu-tokenizer.git
 ARG GPU_TOKENIZER_REF=main
 RUN apt-get update && apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/* && \
