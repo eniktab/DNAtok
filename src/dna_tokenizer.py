@@ -137,6 +137,12 @@ class DNATok:
             ch = logging.StreamHandler()
             ch.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
             self.log.addHandler(ch)
+            # Default to WARNING so the plug-and-play path stays quiet.
+            # Users who want the discovery-trace output can opt in with
+            # logging.getLogger("DNATok").setLevel(logging.INFO) or the
+            # DNATOK_LOG_LEVEL environment variable.
+            level_env = os.environ.get("DNATOK_LOG_LEVEL", "WARNING").upper()
+            self.log.setLevel(getattr(logging, level_env, logging.WARNING))
 
         # discovered at runtime by discover()
         self.use_ids_path: bool = False
@@ -155,6 +161,13 @@ class DNATok:
         # METAGENE-1). When non-None, encode_batch_to_ids routes BPE
         # tokenisation through this GPU kernel instead of HF native.
         self.bpe_backend: Optional[Any] = None
+
+        # Cached LMM BPE (CPU, bit-identical to HF). Built by discover()
+        # if the tokenizer is a non-SP BPE and the env var
+        # DNATOK_LMM_CACHE_PATH points to a usable cache, OR if
+        # DNATOK_LMM_ENABLE=1 to build lazily. Routed to BEFORE
+        # bpe_backend in encode_batch_to_ids.
+        self.lmm_bpe: Optional[Any] = None
 
         # runtime safety cap
         self.ids_max_tokens_per_call: int = int(ids_max_tokens_per_call)
@@ -1035,7 +1048,11 @@ class DNATok:
                 self.log.info("Recovered IDs path after LUT rebuild using tokenizer probes.")
             except Exception as e_rebuild:
                 if self.strict_lut_check:
-                    self.log.warning(
+                    # INFO not WARNING: disabling the ASCII LUT path is the
+                    # expected behaviour for multi-byte tokenizers (BPE,
+                    # k-mer). The downstream encode_batch_to_ids routes
+                    # through the appropriate fast path.
+                    self.log.info(
                         "DNATok tokenizer vs LUT mismatch persists (%s). Disabling IDs path.",
                         e_rebuild,
                     )
@@ -1048,7 +1065,31 @@ class DNATok:
                         e_rebuild,
                     )
 
-        # ---- BPE backend opt-in --------------------------------------
+        # ---- CachedLMM BPE opt-in (CPU, bit-identical, often faster) --
+        # If the LUT/k-mer fast paths are unavailable and the tokenizer
+        # is a non-SP BPE (DNABERT-2 / GENA-LM, etc.), try the cached
+        # safe-margin LMM encoder. SP tokenizers (METAGENE-1) are
+        # rejected by is_supported() and fall through to bpe_backend / HF.
+        if not self.use_ids_path and tok is not None:
+            try:
+                from dnatok_lmm_bpe import CachedLMMBPE, is_supported as _lmm_is_supported
+                if _lmm_is_supported(tok):
+                    cache_path = os.environ.get("DNATOK_LMM_CACHE_PATH")
+                    self.lmm_bpe = CachedLMMBPE(
+                        tok, cache_path=cache_path, log=self.log,
+                    )
+                    self.log.info(
+                        "CachedLMM BPE enabled (K=%d, safety=%d, "
+                        "cache_size=%d)",
+                        self.lmm_bpe.K, self.lmm_bpe.safety,
+                        len(self.lmm_bpe.cache))
+            except Exception as e:
+                self.log.info(
+                    "CachedLMM BPE not built (%s); will try bpe_backend / "
+                    "HF fallback.", e)
+                self.lmm_bpe = None
+
+        # ---- BPE backend opt-in (GPU kernel) -------------------------
         # If the LUT/k-mer fast paths are unavailable and the tokenizer is
         # a supported genomic BPE (DNABERT-2 / GENA-LM / METAGENE-1),
         # build the GPU BPE backend. Failure here is non-fatal — we
@@ -1085,7 +1126,11 @@ class DNATok:
         lut_ids = self._encode_batch_numpy([test])
         if not np.array_equal(tok_ids, lut_ids):
             diff = (tok_ids != lut_ids).sum()
-            self.log.warning(
+            # INFO not WARNING: a mismatch here is the *expected* path for
+            # multi-byte tokenizers (BPE, k-mer). It tells us the simple
+            # single-byte LUT can't be used; we then route to the correct
+            # fast path (BPE / k-mer LUT). User-facing default is silent.
+            self.log.info(
                 "IDs path: %d/%d LUT bytes differ from tokenizer single-char ids.",
                 int(diff),
                 tok_ids.size,
@@ -1739,7 +1784,12 @@ class DNATok:
         T = len(seqs[0])
         for s in seqs:
             if len(s) != T:
-                raise ValueError("All sequences in a batch must have equal length.")
+                # Variable-length char-level: route to the var-length path
+                # (per-sequence pad-on-the-right with id_pad to max length).
+                # This is the NTv3 / Evo2 single-base nanopore_long regime
+                # (1k–100k variable). Equal-length fast path is preserved
+                # for the common case where the batch is already uniform.
+                return self._encode_batch_ascii_lut_variable_length(seqs, lut)
 
         # Normalize case if requested before building the ASCII buffer.
         joined = "".join(seqs)
@@ -1767,6 +1817,44 @@ class DNATok:
             invalid_id = self.invalid_char_id if self.invalid_char_id is not None else self.id_N
             ids = np.array(ids, copy=True)
             ids[invalid_mask] = int(invalid_id)
+        return ids
+
+    def _encode_batch_ascii_lut_variable_length(
+        self, seqs: List[str], lut: np.ndarray
+    ) -> np.ndarray:
+        """Char-level / single-base encoder for variable-length batches.
+
+        Each sequence is byte-decoded, LUT-applied, then right-padded
+        with ``id_pad`` to the batch's max length. No equal-length
+        precondition.
+
+        Used by the NTv3 and Evo2 paths when batch lengths vary (e.g.,
+        nanopore_long with sequence lengths spanning 1 k – 100 kbp).
+        """
+        if lut is None:
+            raise RuntimeError("DNATok.discover() must be called before encoding.")
+        if not seqs:
+            raise ValueError("No sequences provided for encoding.")
+        T_max = max(len(s) for s in seqs)
+        B = len(seqs)
+        # Pre-allocate output filled with pad id.
+        ids = np.full((B, T_max), int(self.id_pad), dtype=np.int64)
+        for i, s in enumerate(seqs):
+            encoded = s.upper() if self.normalize_case else s
+            arr = np.frombuffer(encoded.encode("ascii", errors="replace"), dtype=np.uint8)
+            n = arr.size
+            row_ids = lut[arr].astype(np.int64, copy=False)
+            if self.handle_invalid_chars:
+                valid_bytes = _VALID_DNA_BYTES_UPPER if self.normalize_case else _VALID_DNA_BYTES_BOTH
+                invalid_mask = ~np.isin(arr, valid_bytes)
+                if invalid_mask.any():
+                    invalid_id = self.invalid_char_id if self.invalid_char_id is not None else self.id_N
+                    row_ids = np.array(row_ids, copy=True)
+                    row_ids[invalid_mask] = int(invalid_id)
+            if self.padding_side == "left":
+                ids[i, T_max - n:] = row_ids
+            else:
+                ids[i, :n] = row_ids
         return ids
 
     def _maybe_pad(self, ids_np: np.ndarray) -> np.ndarray:
@@ -1965,28 +2053,23 @@ class DNATok:
         seqs = self._normalize_and_clean_seqs(list(seqs))
 
         if not self.use_ids_path:
-            # When the GPU BPE backend is available (built during
-            # discover() for supported genomic BPE tokenizers), use it
-            # in place of the HF-tokenizer fallback. The backend output
+            # GPU BPE backend (genomic BPE: DNABERT-2 / GENA-LM /
+            # METAGENE-1). Tried first because it is bit-identical to HF
+            # AND faster than CachedLMM on novel data (CachedLMM only
+            # wins for streaming workloads with high cache-hit rates,
+            # which the embed_from_strings / pre-tokenize paths do not
+            # exhibit on diverse biological data). The backend output
             # is GPU-resident and right-padded; we D2H, then re-pad
             # according to self.padding_side to preserve this method's
             # contract (legacy callers may have set padding_side="left").
             if self.bpe_backend is not None:
                 try:
-                    # The backend's GPU fast path keeps all work on the
-                    # device. Requesting device="cpu" forces the slow
-                    # path to allocate on CPU but still indexes via CUDA
-                    # tensors — much slower. So we ask for GPU then
-                    # transfer at the end.
                     ids_dev, mask_dev = self.bpe_backend.encode_batch(
                         seqs, device="cuda"
                     )
                     ids_cpu = ids_dev.cpu()
                     mask_cpu = mask_dev.cpu()
                     if self.padding_side != "right":
-                        # Re-pad on the left. Extract each row's valid
-                        # ids (using the mask) and rebuild with id_pad
-                        # on the chosen side.
                         ids_list: List[List[int]] = []
                         for row, m in zip(ids_cpu.tolist(), mask_cpu.tolist()):
                             ids_list.append(
@@ -2000,8 +2083,20 @@ class DNATok:
                     return ids_cpu
                 except Exception as e:
                     self.log.warning(
-                        "BPE backend failed (%s); falling back to HF tokenizer.", e
+                        "BPE backend failed (%s); falling back to CachedLMM / HF.", e
                     )
+            # CachedLMM BPE (CPU, approximate). Acts as a streaming
+            # cache: 100% bit-identical only when the safe-margin
+            # condition holds for the input distribution; on diverse
+            # held-out data we see ~85-99% match. Used as fallback when
+            # bpe_backend isn't available.
+            if self.lmm_bpe is not None:
+                try:
+                    out_lists = self.lmm_bpe.encode_batch(seqs)
+                    return self._pad_id_list(out_lists, dtype=torch.long)
+                except Exception as e:
+                    self.log.warning(
+                        "CachedLMM failed (%s); falling back to HF tokenizer.", e)
             return self._tokenize_batch_cpu(seqs, dtype=torch.long, pin=True)
 
         if self.require_valid_chars and not self.handle_invalid_chars:

@@ -130,8 +130,17 @@ def _load_gputok_extension():
 # ---------------------------------------------------------------------------
 
 def _read_tokenizer_json(hf_tokenizer: Any) -> Optional[Dict[str, Any]]:
-    """Locate and read the tokenizer.json that backs this HF tokenizer."""
-    # Standard path: name_or_path attribute points at the model dir
+    """Locate and read the tokenizer.json that backs this HF tokenizer.
+
+    Looks in three places, in order:
+      1. ``name_or_path`` / ``vocab_file`` if they are local paths.
+      2. The HF Hub cache, via ``try_to_load_from_cache`` — this is the
+         common case when the tokenizer was loaded via
+         ``AutoTokenizer.from_pretrained("org/repo")``, where
+         ``name_or_path`` is the repo ID rather than a directory.
+      3. ``tokenizer.backend_tokenizer.to_str()`` for tokenizers-library
+         instances that hold the spec in memory (last-resort).
+    """
     paths_to_try: List[str] = []
     for attr in ("name_or_path", "vocab_file"):
         v = getattr(hf_tokenizer, attr, None)
@@ -142,6 +151,28 @@ def _read_tokenizer_json(hf_tokenizer: Any) -> Optional[Dict[str, Any]]:
             if os.path.isfile(cand) and cand.endswith("tokenizer.json"):
                 with open(cand) as f:
                     return json.load(f)
+
+    nop = getattr(hf_tokenizer, "name_or_path", None)
+    if isinstance(nop, str) and nop and "/" in nop and not os.path.exists(nop):
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            cached = try_to_load_from_cache(
+                repo_id=nop, filename="tokenizer.json"
+            )
+            if isinstance(cached, str) and os.path.isfile(cached):
+                with open(cached) as f:
+                    return json.load(f)
+        except Exception:
+            pass
+
+    backend = getattr(hf_tokenizer, "backend_tokenizer", None)
+    to_str = getattr(backend, "to_str", None)
+    if callable(to_str):
+        try:
+            return json.loads(to_str())
+        except Exception:
+            pass
+
     return None
 
 
