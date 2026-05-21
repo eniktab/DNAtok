@@ -1,0 +1,94 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:25.11-py3
+
+# ============================================================================
+# DNAtok — Singularity / Apptainer definition file
+#
+# Mirrors docker/Dockerfile for sites that cannot build Docker images
+# (most HPC clusters, including NCI Gadi). Produces a .sif that runs
+# end-to-end on H200 (sm_90) and A100 (sm_80) — the same image works
+# on any x86_64 Hopper or Ampere node.
+#
+# Build (from the DNAtok repo root):
+#   apptainer build dnatok.sif docker/dnatok.def
+#
+# ~20 min on a Gadi compute node; ~10 min if NGC base is cached.
+# Resulting .sif is ~10 GB.
+#
+# Run plug-and-play:
+#   apptainer exec --nv \
+#       -B ~/.cache/huggingface:/work/.hf-cache \
+#       dnatok.sif dnatok demo --model zhihan1996/DNABERT-2-117M
+# ============================================================================
+
+%labels
+   org.opencontainers.image.title        DNAtok
+   org.opencontainers.image.description  GPU-native tokenisation for genomic foundation models — bit-identical to Hugging Face
+   org.opencontainers.image.licenses     Apache-2.0
+   org.opencontainers.image.source       https://github.com/anu-dnatok/dnatok
+
+%files
+   # Source tree — copied into the image at /work.
+   src                              /work/src
+   benchmarks                       /work/benchmarks
+   bio_examples                     /work/bio_examples
+   examples                         /work/examples
+   tests                            /work/tests
+   setup.py                         /work/setup.py
+   README.md                        /work/README.md
+   LICENSE                          /work/LICENSE
+   docker/smoke_test.sh             /work/docker/smoke_test.sh
+   docker/requirements.txt          /tmp/requirements.txt
+   docker/requirements-evo2.txt     /tmp/requirements-evo2.txt
+   docker/gpu-tokenizer-headers     /opt/gpu-tokenizer
+
+%post
+   set -eu
+
+   # ---- Python deps ------------------------------------------------------
+   # Two-stage install matching the Dockerfile rationale: the Evo2 stack's
+   # upstream setup.py imports torch at build time, so we use
+   # --no-build-isolation for that subset.
+   pip install --no-cache-dir -r /tmp/requirements.txt
+   pip install --no-cache-dir --no-build-isolation -r /tmp/requirements-evo2.txt
+
+   # ---- Editable install of DNAtok + CLI entrypoint ---------------------
+   pip install --no-cache-dir -e /work
+
+   # ---- Cache + output dirs ---------------------------------------------
+   mkdir -p /work/.hf-cache /work/.torch-extensions /work/results
+
+   # ---- Build-time sanity check -----------------------------------------
+   # Validates that imports work and the `dnatok` CLI is on $PATH inside
+   # the container. Aborts the build on failure.
+   python3 -c "import torch, transformers, dnatok_compat; from dna_tokenizer import DNATok; print('[dnatok] build sanity import OK')"
+   dnatok --help > /dev/null && echo "[dnatok] CLI entry point registered"
+
+%environment
+   # GPU BPE backend headers (vendored from the gpu-tokenizer repo).
+   export GPUTOK_DIR=/opt/gpu-tokenizer
+
+   # Triton libcuda lookup. On Apptainer the host driver is bound by
+   # `--nv` under /.singularity.d/libs/; on Docker by the NVIDIA Container
+   # Toolkit. The compat-lib path is a fallback for forward-compat runs.
+   export TRITON_LIBCUDA_PATH="/.singularity.d/libs:/usr/local/cuda/compat/lib.real:/usr/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu"
+
+   # HF cache + scratch — override via --bind from the host.
+   export HF_HOME=/work/.hf-cache
+   export TORCH_EXTENSIONS_DIR=/work/.torch-extensions
+   export TRANSFORMERS_VERBOSITY=warning
+   export PYTHONUNBUFFERED=1
+   export PYTHONPATH=/work:/work/src
+
+%runscript
+   # `apptainer run dnatok.sif <args>` → forwarded to the dnatok CLI.
+   exec dnatok "$@"
+
+%startscript
+   # `apptainer instance start` no-op stub.
+   exec dnatok --help
+
+%test
+   # Run on `apptainer test dnatok.sif`. CPU-only validation.
+   dnatok --help
+   dnatok list-models

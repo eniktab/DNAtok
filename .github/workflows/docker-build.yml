@@ -1,0 +1,76 @@
+name: Build + push Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same ref so we don't burn CI on
+# rapid pushes.
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space (Docker images are ~20 GB)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR (only on main / tags)
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          BASE="ghcr.io/${{ github.repository_owner }}/dnatok"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "tags=${BASE}:${{ github.ref_name }},${BASE}:latest" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "tags=${BASE}:dev,${BASE}:main-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${BASE}:pr-${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (+ push on main / tags)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          # Multi-arch left to a separate workflow — NGC PyTorch base
+          # is amd64-only as of 25.11.
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build-time sanity (no GPU required)
+        # The Dockerfile RUN at the end already runs `dnatok --help`;
+        # this re-validates from outside the build.
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run --rm dnatok:dev dnatok --help
+          docker run --rm dnatok:dev dnatok list-models

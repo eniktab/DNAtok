@@ -1,0 +1,80 @@
+# Exclude data + results from the Docker build context.
+# These are large, environment-specific, and should be mounted at runtime
+# (HF_HOME for model weights, /work/results for output) rather than baked
+# into the image.
+
+# Chromosome FASTAs (downloaded by bio_examples on first use)
+bio_examples/_data/*.fa
+bio_examples/_data/*.fa.gz
+bio_examples/_data/*.fai
+bio_examples/_data/*.bed
+bio_examples/_data/*.bed.gz
+bio_examples/_data/*.vcf
+bio_examples/_data/*.vcf.gz
+bio_examples/_data/*.narrowPeak*
+bio_examples/_data/encode_*
+bio_examples/_data/clinvar*
+bio_examples/_data/hg38*
+
+# HPC + local results
+results/
+results_hpc/
+results_local/
+*.csv
+*.pdf
+*.png
+
+# Python build artefacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.torch_extensions/
+.hf-cache/
+*.egg-info/
+build/
+dist/
+
+# Editor / IDE
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Git
+.git/
+.github/
+.gitignore
+
+# Documents that don't affect runtime
+paper_content/
+docs/
+*.md
+!README.md
+!docker/README.md
+!docker/BUILD_AND_TEST.md
+!CHANGELOG.md
+!CONTRIBUTING.md
+!LICENSE*
+
+# Stale audit files (not needed at runtime)
+AUDIT_*.md
+AUDIT_NOTES.md
+GADI_*.md
+MODELS_AUDIT.md
+DOCKER_PLUG_AND_PLAY_PLAN.md
+
+# Local experiment runs
+coscientist_run/
+era_run/
+.agents/
+.remember/
+.claude/
+
+# Old / deprecated
+deprecated/
+
+# Misc debug files
+activations_debug.log
+ptxas_log.txt

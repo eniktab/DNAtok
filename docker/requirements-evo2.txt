@@ -1,0 +1,14 @@
+# Evo2 stack — CUDA-built extensions for the Evo2 family (1B / 7B / 40B).
+#
+# These MUST be installed with `--no-build-isolation` because their
+# upstream setup.py imports `torch` at build time. Pip's default PEP 517
+# isolated build environment doesn't include torch, so the build fails.
+#
+# Install order matters: causal_conv1d before mamba_ssm before evo2.
+#
+# Skip this file entirely if you only need DNABERT-2, GENA-LM, NTv3,
+# HyenaDNA, NTv2, or METAGENE-1 — those don't depend on Evo2.
+
+causal_conv1d==1.6.2.post1
+mamba_ssm==2.3.2.post1
+evo2==0.4.0

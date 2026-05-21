@@ -1,0 +1,37 @@
+# DNAtok runtime dependencies (additional to the NGC PyTorch container).
+#
+# EXACT pins matching the validated Gadi snapshot in
+# `env_detail/audit/reference.json`. Tested on NVIDIA H200 (sm_90),
+# A100 (sm_80) and consumer Blackwell GB10 (sm_120) with the NGC
+# PyTorch 25.11 base image.
+#
+# DO NOT loosen these without re-running the full bit-identity test
+# suite (`dnatok validate --model <each>` for all seven families).
+
+# Core HuggingFace stack — versions pinned together so transformers'
+# internal `huggingface_hub` constraint check passes cleanly.
+transformers==4.56.2
+huggingface_hub==0.35.1
+tokenizers==0.22.1
+datasets==4.4.1
+safetensors==0.6.2
+accelerate==1.1.1
+
+# Scientific stack — numpy 2.x works on NGC PyTorch 2.10 + Triton 3.7.
+numpy==2.1.0
+scipy==1.16.3
+pandas==2.3.3
+
+# Tokeniser-specific (SentencePiece for METAGENE-1, etc.)
+sentencepiece==0.2.0
+einops==0.8.0
+
+# Biological I/O (FASTA, VCF, BED) — required by examples/04 + bio_examples
+biopython==1.85
+pysam==0.23.0
+pyfaidx==0.9.0.4
+
+# Evo2 stack lives in docker/requirements-evo2.txt because it has to
+# be installed with `--no-build-isolation` (the upstream setup.py
+# imports torch at build time). The Dockerfile installs it in a
+# separate RUN.
