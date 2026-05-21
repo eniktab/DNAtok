@@ -220,6 +220,11 @@ results_hpc/
 results_local/
 results/
 .agents/
+
+# docker/gpu-tokenizer-headers/ used to be vendored but the upstream
+# repo is now cloned at Docker build time (see docker/Dockerfile).
+# The headers stay gitignored locally for developers who keep a local
+# copy for offline builds.
 docker/gpu-tokenizer-headers/
 coscientist_run/
 era_run/

@@ -43,10 +43,19 @@ COPY README.md            /work/README.md
 COPY LICENSE              /work/LICENSE
 
 # ---- gpu-tokenizer headers ------------------------------------------
-# DNAtok's BPE kernel uses cuCollections + cccl headers from the
-# gpu-tokenizer repo. We vendor the include subtree directly so the
-# image is self-contained and JIT-compiles work without network access.
-COPY docker/gpu-tokenizer-headers/ /opt/gpu-tokenizer/
+# DNAtok's BPE kernel needs cuCollections + cccl headers from the
+# gpu-tokenizer repo. The headers total ~100 MB so we don't vendor
+# them in the DNAtok repo; instead we clone the upstream public repo
+# (Apache-2.0) at a known-good commit at image-build time. The image
+# is still self-contained at runtime — no network access needed
+# during inference; only at build.
+ARG GPU_TOKENIZER_REPO=https://github.com/gpu-tokenizer/gpu-tokenizer
+ARG GPU_TOKENIZER_REF=main
+RUN apt-get update && apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/* && \
+    git clone --recurse-submodules --depth 1 --branch "${GPU_TOKENIZER_REF}" \
+        "${GPU_TOKENIZER_REPO}" /opt/gpu-tokenizer && \
+    rm -rf /opt/gpu-tokenizer/.git /opt/gpu-tokenizer/externals/*/.git
 ENV GPUTOK_DIR=/opt/gpu-tokenizer
 
 # ---- Editable install of DNAtok + CLI entrypoint --------------------

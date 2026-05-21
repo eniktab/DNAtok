@@ -1,0 +1,20 @@
+{
+  "model_name": "Evo2-1b (ClinVar 4 kbp ref/alt windows)",
+  "n_inputs": 100,
+  "seq_lengths": [
+    4096,
+    4096,
+    4096
+  ],
+  "hf_tokenize_ms": 125.68029796238989,
+  "dnatok_tokenize_ms": 5.612449022009969,
+  "speedup_tokenize": 22.3931295357014,
+  "ids_bit_identical": true,
+  "ids_mismatch_count": 0,
+  "ids_mismatch_examples": [],
+  "hf_logits_ms": null,
+  "dnatok_logits_ms": null,
+  "logits_match": null,
+  "logits_max_abs_diff": null,
+  "notes": ""
+}

@@ -1,0 +1,20 @@
+{
+  "model_name": "DNABERT-2 (chr21 1 kbp tiling)",
+  "n_inputs": 100,
+  "seq_lengths": [
+    1000,
+    1000,
+    1000
+  ],
+  "hf_tokenize_ms": 21.067128982394934,
+  "dnatok_tokenize_ms": 10.258388938382268,
+  "speedup_tokenize": 2.05364888277644,
+  "ids_bit_identical": true,
+  "ids_mismatch_count": 0,
+  "ids_mismatch_examples": [],
+  "hf_logits_ms": null,
+  "dnatok_logits_ms": null,
+  "logits_match": null,
+  "logits_max_abs_diff": null,
+  "notes": ""
+}
