@@ -1,484 +1,438 @@
-# DNATok
+# DNAtok
 
-**High-performance GPU-accelerated DNA sequence tokenization for genomic foundation models**
+**GPU-native tokenization for genomic foundation models. Bit-identical to Hugging Face. 2–100× faster.**
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
+<p align="center">
+  <a href="#installation"><img src="https://img.shields.io/badge/install-pip-blue" alt="pip"></a>
+  <a href="#docker"><img src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker" alt="docker"></a>
+  <a href="#supported-models"><img src="https://img.shields.io/badge/models-21%20variants-success" alt="models"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="license"></a>
+  <a href="#benchmarks"><img src="https://img.shields.io/badge/benchmark-V100%20%7C%20A100%20%7C%20H200-orange" alt="benchmark"></a>
+</p>
 
-DNATok provides **34-244x speedup** over standard tokenization for DNA foundation models through intelligent runtime optimization, vectorized operations, and GPU acceleration.
+Modern genomic foundation models — Evo2 (Nature 2026), NTv3 (2025), DNABERT-2, HyenaDNA, Caduceus, GENA-LM, METAGENE-1, and the rest — have moved tokenization to **single-nucleotide resolution** to capture biology at base granularity. At single-base resolution, on high-throughput workloads, the CPU-bound HF tokenizer can no longer keep up — it becomes the rate-limiting step that **starves the GPU**, dropping end-to-end throughput well below what the hardware could deliver. DNAtok removes that bottleneck by tokenizing on the GPU and produces token IDs bit-identical to Hugging Face's reference implementation on every supported model.
 
----
+## 🚀 Try it in 30 seconds — no installation
 
-## Table of Contents
+The Docker image is fully self-contained: NGC PyTorch 25.11 base + DNAtok + all dependencies pinned. Give it a Hugging Face model ID and it tokenizes, validates bit-identity vs HF, and benchmarks throughput — no other setup.
 
-- [Features](#features)
-- [Performance](#performance)
+```bash
+# Pull the image (one-time, ~10 GB compressed)
+docker pull ghcr.io/anu-dnatok/dnatok:latest
+
+# Run an end-to-end demo on any of the 7 supported families
+docker run --rm --gpus all \
+    -v ~/.cache/huggingface:/work/.hf-cache \
+    ghcr.io/anu-dnatok/dnatok:latest \
+    dnatok demo --model zhihan1996/DNABERT-2-117M
+```
+
+Output (DNABERT-2 on H200):
+
+```
+[1/4] tokenizer info: path=gpu-bpe-kernel, vocab=4096, device=cuda
+[2/4] encode a sample sequence: 12 tokens
+[3/4] bit-identity vs HF (n=50, random ACGT, win≤256bp): PASS
+[4/4] tiny benchmark (n=100, win=1024, chunk=32, HF threads=4):
+        hf       30.0 ms   ( 3.4 Mbp/s)
+        dnatok    7.2 ms   (14.2 Mbp/s)
+        speedup    4.2x
+```
+
+Swap `zhihan1996/DNABERT-2-117M` for any supported HF model (`dnatok list-models`) — no rebuild needed; weights download to the mounted cache on first use.
+
+For HPC clusters that disallow Docker, use the Apptainer/Singularity `.sif`:
+
+```bash
+apptainer pull dnatok.sif docker://ghcr.io/anu-dnatok/dnatok:latest
+apptainer exec --nv -B ~/.cache/huggingface:/work/.hf-cache dnatok.sif \
+    dnatok demo --model arcinstitute/evo2_1b_base
+```
+
+## Contents
+
+- [Why DNAtok](#why-dnatok)
 - [Installation](#installation)
-- [Examples](#examples)
-- [Quick Start](#quick-start)
-- [Usage](#usage)
-- [Supported Models](#supported-models)
+- [Quick start](#quick-start)
+- [Supported models](#supported-models)
+- [Usage by model family](#usage-by-model-family)
+- [Docker](#docker)
 - [Benchmarks](#benchmarks)
-- [API Reference](#api-reference)
-- [Testing](#testing)
-- [Contributing](#contributing)
+- [How it works](#how-it-works)
+- [Reproducing the paper](#reproducing-the-paper)
 - [Citation](#citation)
 - [License](#license)
 
----
+## Why DNAtok
 
-## Features
+| Tokenization era | Example models | Tokens / base | Typical throughput pain |
+|---|---|---|---|
+| 6-mer (2023) | NTv2 | 0.17 | Mild — short reads only |
+| BPE (2023–24) | DNABERT-2, GENA-LM, METAGENE-1 | ~0.25 | Moderate — long reads |
+| **Single-base (2025–26)** | **NTv3, Evo2** | **1.0** | **Severe — every workload** |
 
-### Core Capabilities
-
-- **GPU-Accelerated**: Device-side lookup tables (LUTs) eliminate CPU→GPU tokenization bottleneck
-- **K-mer Fast Path**: Automatic detection and optimization for k-mer tokenizers (k=3-6)
-- **Runtime Discovery**: Builds ASCII/k-mer LUTs from any tokenizer at runtime—no manual configuration
-- **Pipelined Execution**: Overlaps H2D copies with embedding compute using CUDA streams
-- **Robust Fallback**: Gracefully handles edge cases by falling back to tokenizer when needed
-- **Auto-Tuning**: Dynamically adjusts micro-batch sizes to avoid 32-bit index overflow and OOM
-
-### Encoding Paths
-
-DNATok automatically selects the fastest path:
-
-| Path | Description | Speedup | Use Case |
-|------|-------------|---------|----------|
-| **Bytes Path** | GPU LUT mapping | **68-244x** | Character-level tokenizers on GPU |
-| **K-mer Path** | Optimized k-mer encoding | **50-150x** | K-mer tokenizers (NT, others) |
-| **IDs Path** | CPU staging with overlap | **34-43x** | Fallback for complex tokenizers |
-| **Tokenizer Fallback** | Native tokenizer | **1x Baseline** | Unsupported edge cases |
-
----
-
-## Performance
-
-### Real-World Benchmarks
-
-Tested on NVIDIA A100 with production genomic foundation models:
-
-| Model | Scenario | Batch Size | Seq Length | Speedup | Tokens/sec |
-|-------|----------|------------|------------|---------|------------|
-| **Nucleotide Transformer** | Throughput | 32 | 1024 | **37.3x** | 2.1B tok/s |
-| **HyenaDNA** | Throughput | 64 | 1024 | **100.1x** | 3.5B tok/s |
-| **Evo2** | Latency | 1 | 1024 | **24.2x** | 56M tok/s |
-| **MockTokenizer** | Large Batch | 8192 | 512 | **200.8x** | 2.1B tok/s |
-
-> **Note**: Speedups measured as end-to-end tokenization+embedding vs. baseline tokenizer approach.
-
-### Scaling Characteristics
-
-- **Batch Size**: Larger batches → higher speedup (up to 200x at B=8192)
-- **Sequence Length**: Scales linearly; bytes path particularly efficient for long sequences
-- **K-mer Models**: 50-150x speedup with automatic k-mer structure detection
-
----
+At single-base resolution there are **~6× more tokens per base** than at 6-mer (1 token/base vs ~0.17 token/base) and contexts have grown to **1 Mbp**. The GPU model forward pass is still the largest single cost of inference, but for high-throughput pipelines the CPU-bound tokenizer can no longer produce token batches fast enough to keep the GPU busy — the GPU **starves**. DNAtok removes that starvation by tokenizing on the GPU directly. Same `AutoTokenizer` API, same outputs — much faster end-to-end.
 
 ## Installation
 
-### Prerequisites
-
-- Python 3.8+
-- PyTorch 2.0+ with CUDA support
-- CUDA 11.7+ (for GPU acceleration)
-
-### From Source
+### From PyPI _(once published)_
 
 ```bash
-git clone https://github.com/yourusername/DNATok.git
-cd DNATok
+pip install dnatok
+```
+
+### From source
+
+```bash
+git clone https://github.com/[org]/DNAtok.git
+cd DNAtok
 pip install -e .
 ```
 
-### Dependencies
+### Requirements
 
-Core dependencies (installed automatically):
+| | Version |
+|---|---|
+| CUDA | 11.8+ (12.x recommended) |
+| GPU compute capability | sm_70 (V100) through sm_120 (Blackwell) |
+| PyTorch | 2.1+ |
+| Python | 3.10+ |
+| Transformers | 4.46+ |
+
+The CUDA kernel JIT-compiles on first use for your specific GPU architecture. No precompiled wheels needed.
+
+## Getting models
+
+DNAtok is a drop-in replacement for the tokenization step. The models themselves live on Hugging Face Hub — you download them once and DNAtok loads them from the local cache. Three equivalent ways to fetch a model:
+
+### 1. Implicit download via `from_pretrained` (most common)
+
+```python
+from transformers import AutoTokenizer, AutoModel
+# This downloads weights + tokenizer files to ~/.cache/huggingface/hub
+# the first time, then loads from cache on subsequent runs.
+tok = AutoTokenizer.from_pretrained("InstaDeepAI/NTv3_650M_post_131kb",
+                                     trust_remote_code=True)
+model = AutoModel.from_pretrained("InstaDeepAI/NTv3_650M_post_131kb",
+                                   trust_remote_code=True).cuda()
 ```
-torch>=2.0.0
-numpy>=1.20.0
-```
 
-Optional dependencies for examples:
-```
-transformers>=4.30.0  # For Hugging Face models
-evo2                  # For Evo2 model support
-```
-
----
-
-## Examples
-
-- `examples/nt_transformer_demo.py`: Run Nucleotide Transformer end-to-end and benchmark DNATok vs. the baseline tokenizer
-- `examples/hyena_demo.py`: Demonstrate bytes-path acceleration for HyenaDNA character-level tokenization
-- `examples/evo2_demo.py`: Use the k-mer path with Evo2 and validate against the reference tokenizer
-
-See the `examples/` directory for usage and configuration details.
-
----
-
-## Quick Start
-
-### Nucleotide Transformer Example
+### 2. Explicit download via `huggingface-cli` (recommended for clusters)
 
 ```bash
-# Install dependencies
-pip install torch transformers
+pip install -U "huggingface_hub[cli]"
 
-# Set model path (or use HF hub)
-export NT_MODEL_PATH=/path/to/nucleotide-transformer-2.5b-1000g
-
-# Run demonstration
-python examples/nt_transformer_demo.py
+# Pre-download the tokenizer + weights into a chosen cache:
+export HF_HOME=/path/to/your/hf-cache
+huggingface-cli download InstaDeepAI/NTv3_650M_post_131kb
+huggingface-cli download arcinstitute/evo2_1b_base
+huggingface-cli download zhihan1996/DNABERT-2-117M
 ```
 
-The demo will:
-1. Load the Nucleotide Transformer model
-2. Run DNATok discovery to build LUTs
-3. Verify correctness against baseline tokenizer
-4. Benchmark and report speedup
+Then in Python:
 
-### Minimal Code Example
+```python
+import os
+os.environ["HF_HUB_OFFLINE"] = "1"            # optional: enforce offline
+os.environ["HF_HOME"] = "/path/to/your/hf-cache"
+```
+
+### 3. Bulk download via a one-liner
+
+```python
+# Pull the canonical 14-model set into the current HF cache.
+from huggingface_hub import snapshot_download
+for repo in [
+    "InstaDeepAI/nucleotide-transformer-v2-50m-multi-species",
+    "InstaDeepAI/nucleotide-transformer-v2-500m-multi-species",
+    "InstaDeepAI/NTv3_8M_pre", "InstaDeepAI/NTv3_100M_pre",
+    "InstaDeepAI/NTv3_100M_post", "InstaDeepAI/NTv3_650M_post",
+    "InstaDeepAI/NTv3_650M_post_131kb",
+    "LongSafari/hyenadna-tiny-1k-seqlen-hf",
+    "LongSafari/hyenadna-small-32k-seqlen-hf",
+    "LongSafari/hyenadna-medium-160k-seqlen-hf",
+    "LongSafari/hyenadna-medium-450k-seqlen-hf",
+    "LongSafari/hyenadna-large-1m-seqlen-hf",
+    "kuleshov-group/caduceus-ph_seqlen-1k_d_model-256_n_layer-4_lr-8e-3",
+    "kuleshov-group/caduceus-ph_seqlen-131k_d_model-256_n_layer-16",
+    "kuleshov-group/caduceus-ps_seqlen-131k_d_model-256_n_layer-16",
+    "zhihan1996/DNABERT-2-117M",
+    "AIRI-Institute/gena-lm-bert-base-t2t",
+    "metagene-ai/METAGENE-1",
+    "arcinstitute/evo2_1b_base",
+]:
+    snapshot_download(repo)
+```
+
+`snapshot_download` is idempotent — it skips already-cached files, so running it twice is a no-op.
+
+### Models with custom tokenizers (Evo2 + NTv3)
+
+Some published genomic FMs ship a `config.json` without a `model_type` field (Evo2) or require `trust_remote_code` for a custom tokenizer class (NTv3). The project ships a single loader that handles both:
+
+```python
+from benchmarks.tokenizer_adapters import load_hf_tokenizer
+hf_tok = load_hf_tokenizer("arcinstitute/evo2_1b_base")  # works for any supported family
+```
+
+Use `AutoTokenizer.from_pretrained(..., trust_remote_code=True)` for ordinary HF models, and `load_hf_tokenizer` when you want the same code path to work transparently across Evo2, NTv3 and the rest.
+
+## Quick start
+
+Bit-identical to Hugging Face. The only change is wrapping `AutoTokenizer` with `DNATok`.
 
 ```python
 import torch
-from transformers import AutoTokenizer, AutoModelForMaskedLM
+from transformers import AutoTokenizer, AutoModel
 from dna_tokenizer import DNATok
 
-# Load model and tokenizer
-tokenizer = AutoTokenizer.from_pretrained(
-    "InstaDeepAI/nucleotide-transformer-2.5b-1000g",
-    trust_remote_code=True
-)
-model = AutoModelForMaskedLM.from_pretrained(
-    "InstaDeepAI/nucleotide-transformer-2.5b-1000g",
-    trust_remote_code=True
-).eval().to("cuda")
+# Load any supported genomic foundation model
+hf_tok = AutoTokenizer.from_pretrained(
+    "InstaDeepAI/NTv3_650M_post_131kb", trust_remote_code=True)
+model = AutoModel.from_pretrained(
+    "InstaDeepAI/NTv3_650M_post_131kb", trust_remote_code=True).cuda()
 
-# Create adapter for DNATok
-class ModelAdapter(torch.nn.Module):
-    def __init__(self, model, tokenizer):
-        super().__init__()
-        self.model = model
-        self.tokenizer = tokenizer
-        self.pad_token_id = tokenizer.pad_token_id
-        self._embed = model.get_input_embeddings()
-    
-    def embed_tokens(self, input_ids):
-        return self._embed(input_ids)
+# Wrap the tokenizer — DNAtok auto-discovers the right fast path
+dnatok = DNATok(model)
+dnatok.discover()
 
-adapter = ModelAdapter(model, tokenizer)
-
-# Initialize DNATok and discover tokenizer structure
-dna_tok = DNATok(adapter)
-dna_tok.discover()
-
-# Encode sequences (all must be equal length)
-sequences = ["ACGTACGTACGT" * 85] * 32  # 32 sequences of length 1024
-embeddings_iter = dna_tok.embed_from_strings(
-    sequences,
-    emb_batch=32,
-    device="cuda",
-    path="auto"  # Automatically select fastest path
-)
-
-# Get embeddings
-embeddings = torch.cat(list(embeddings_iter), dim=0)
-print(f"Embeddings shape: {embeddings.shape}")  # [32, 1024, hidden_dim]
+# Tokenize and embed a batch
+seqs = ["ACGT" * 2048 for _ in range(64)]
+ids = dnatok.encode_batch_to_ids(seqs)         # [B, T_max] padded
+with torch.no_grad():
+    out = model(ids.cuda()).last_hidden_state  # [B, T_max, D]
 ```
 
----
+The output `ids` tensor matches `hf_tok(seqs)["input_ids"]` exactly (after padding alignment). For verification, see [the correctness gate](#how-it-works).
 
-## Usage
+## Supported models
 
-### Advanced Configuration
+DNAtok supports 21 published variants of the seven major genomic FM families:
+
+| Family | Model variants | Tokenization | Context | Year |
+|---|---|---|---|---|
+| **Evo2** | `arcinstitute/evo2_1b_base` (+ 7B / 40B) | Single-nucleotide | 1 Mbp | 2026 |
+| **NTv3** | `InstaDeepAI/NTv3_{8M,100M,650M}_{pre,post}`, `..._131kb` | Single-nucleotide | up to 1 Mbp | 2025 |
+| **HyenaDNA** | `LongSafari/hyenadna-{tiny-1k,small-32k,medium-160k,medium-450k,large-1m}-seqlen-hf` | Char-level LUT | 1k–1Mbp | 2023 |
+| **Caduceus** | `kuleshov-group/caduceus-ph_seqlen-{1k,131k}_...`, `..._ps_...` | Char-level LUT | 1k–131k | 2024 |
+| **NTv2** | `InstaDeepAI/nucleotide-transformer-v2-{50M,500M}-multi-species` | 6-mer LUT | 1k | 2023 |
+| **DNABERT-2** | `zhihan1996/DNABERT-2-117M` | BPE | 4k | 2023 |
+| **GENA-LM** | `AIRI-Institute/gena-lm-bert-base-t2t` | BPE | ~36k | 2023 |
+| **METAGENE-1** | `metagene-ai/METAGENE-1` | BPE | 32k | 2024 |
+
+DNAtok's auto-discovery probes any Hugging Face tokenizer at `discover()` time and routes it to the appropriate GPU fast path:
 
 ```python
-from dna_tokenizer import DNATok
-
-# Initialize with custom parameters
-dna_tok = DNATok(
-    embedder=adapter,
-    ids_max_tokens_per_call=4_194_304,  # Max tokens per embedding call
-    prefer_int32_h2d=True,              # Use int32 H2D for bandwidth savings
-    overlap_h2d_compute=True,           # Pipeline H2D and compute
-    force_fp32_outputs=False,           # Allow fp16 outputs for speed
-    normalize_case=True,                # Force uppercase normalization
-    handle_invalid_chars=True           # Map invalid chars to 'N'
-)
-
-# Discover tokenizer structure
-dna_tok.discover()
-
-# Check discovered path
-if dna_tok.kmer_k:
-    print(f"K-mer tokenizer detected (k={dna_tok.kmer_k})")
-elif dna_tok.ascii_lut is not None:
-    print("Character-level tokenizer detected")
+dnatok = DNATok(model)
+dnatok.discover()  # → routes to k-mer, BPE, or single-base path automatically
 ```
 
-### Path Selection
+## Usage by model family
+
+| Family | Runnable example | What it shows |
+|---|---|---|
+| **Generic** | [`examples/quickstart.py`](examples/quickstart.py) | Wrap any HF tokenizer; pick a model with `--model`. |
+| **Evo2** | [`examples/evo2_variant_effect.py`](examples/evo2_variant_effect.py) | Tokenize a 4 kbp ref + alt SNV window. |
+| **NTv3** | [`examples/ntv3_long_context.py`](examples/ntv3_long_context.py) | Tokenize 32 kbp regulatory-scan windows. |
+| **All published genomic FMs** | [`bio_examples/`](bio_examples/) | Case-study pipelines (ClinVar / chr21 / ENCODE). |
+
+### NTv3 (single-nucleotide, long-context)
 
 ```python
-# Auto (recommended): Automatically select fastest available path
-embeddings = dna_tok.embed_from_strings(seqs, emb_batch=32, path="auto")
+hf_tok = AutoTokenizer.from_pretrained(
+    "InstaDeepAI/NTv3_650M_post_131kb", trust_remote_code=True)
+dnatok = DNATok(model); dnatok.discover()
 
-# Bytes path: Force GPU-side LUT mapping (fastest for char-level)
-embeddings = dna_tok.embed_from_strings(seqs, emb_batch=32, path="bytes")
-
-# IDs path: Force CPU staging with optional overlap
-embeddings = dna_tok.embed_from_strings(seqs, emb_batch=32, path="ids")
+# Long-context regulatory scan
+chr21_windows = [genome.fetch("chr21", i, i + 131_072)
+                 for i in range(0, len(chr21), 1000)]
+ids = dnatok.encode_batch_to_ids(chr21_windows)  # ~25× faster than HF
 ```
 
-### Handling Edge Cases
+### Evo2 (single-nucleotide, variant effect)
 
 ```python
-# Normalize case for mixed-case inputs
-dna_tok = DNATok(adapter, normalize_case=True)
+# Evo2 ships a byte-level tokenizer; use the project loader
+from benchmarks.tokenizer_adapters import load_hf_tokenizer
+hf_tok = load_hf_tokenizer("arcinstitute/evo2_1b_base")
+dnatok = DNATok(model); dnatok.discover()
 
-# Handle invalid characters gracefully
-dna_tok = DNATok(adapter, handle_invalid_chars=True)
-
-# Both together for maximum robustness
-dna_tok = DNATok(adapter, normalize_case=True, handle_invalid_chars=True)
-dna_tok.discover()
-
-# Now accepts: "AcGtXnNn" → "ACGTNNN" (X mapped to N)
+# Score a ClinVar variant
+ref_window = genome.fetch("chr1", pos - 2048, pos + 2048)
+alt_window = ref_window[:2048] + alt + ref_window[2049:]
+ids = dnatok.encode_batch_to_ids([ref_window, alt_window])
+log_lik = model(ids.cuda()).logits.log_softmax(-1)  # variant effect: Δ log_lik
 ```
 
----
+### DNABERT-2 (BPE, sub-word units)
 
-## Supported Models
+```python
+hf_tok = AutoTokenizer.from_pretrained(
+    "zhihan1996/DNABERT-2-117M", trust_remote_code=True)
+dnatok = DNATok(model); dnatok.discover()
+ids = dnatok.encode_batch_to_ids(seqs)  # BPE on GPU
+```
 
-DNATok has been tested and validated with:
+### NTv2 (6-mer)
 
-### Character-Level Tokenizers
-- **HyenaDNA** (all sizes: tiny-1k to large-1m)
-- **Custom DNA vocabularies** (ACGTN)
+```python
+hf_tok = AutoTokenizer.from_pretrained(
+    "InstaDeepAI/nucleotide-transformer-v2-500m-multi-species")
+dnatok = DNATok(model); dnatok.discover()
+ids = dnatok.encode_batch_to_ids(seqs)  # k-mer LUT path
+```
 
-### K-mer Tokenizers
-- **Nucleotide Transformer** (all variants: 500M-2.5B, k=6)
-- **Evo2** (7B parameter model, k=6)
-- **Custom k-mer models** (k=3,4,5,6)
+### HyenaDNA / Caduceus / GENA-LM / METAGENE-1
 
-### Compatibility
+Same wrapping pattern — `DNATok(model).discover()`, then `encode_batch_to_ids(seqs)`. The auto-discovery picks the correct kernel path for each family.
 
-DNATok automatically adapts to:
-- Hugging Face `transformers` models
-- Custom tokenizers with `encode()` or `tokenize()` methods
-- Models with `embed_tokens()` or `get_input_embeddings()`
+## Docker
 
----
+The Docker image runs unchanged from a consumer Blackwell GB10 to an HPC H200. Same image, same `.sif`, validated on sm_80 (A100), sm_90 (H200) and sm_120 (GB10).
+
+```bash
+# Pull (once published)
+docker pull ghcr.io/anu-dnatok/dnatok:latest
+
+# Or build locally (~15-20 min, see docker/BUILD_AND_TEST.md)
+docker build -t dnatok:dev -f docker/Dockerfile .
+
+# CLI: any sub-command takes --model <HF id>
+docker run --rm --gpus all -v ~/.cache/huggingface:/work/.hf-cache \
+    dnatok:dev dnatok info     --model zhihan1996/DNABERT-2-117M
+docker run --rm --gpus all -v ~/.cache/huggingface:/work/.hf-cache \
+    dnatok:dev dnatok encode   --model zhihan1996/DNABERT-2-117M --seq ACGTACGT
+docker run --rm --gpus all -v ~/.cache/huggingface:/work/.hf-cache \
+    dnatok:dev dnatok validate --model zhihan1996/DNABERT-2-117M --n 500
+docker run --rm --gpus all -v ~/.cache/huggingface:/work/.hf-cache \
+    dnatok:dev dnatok bench    --model zhihan1996/DNABERT-2-117M --n 1000 --window 4096
+docker run --rm --gpus all -v ~/.cache/huggingface:/work/.hf-cache \
+    dnatok:dev dnatok demo     --model zhihan1996/DNABERT-2-117M  # all-in-one
+docker run --rm dnatok:dev dnatok list-models                     # registry
+
+# Run an interactive Python session inside the image
+docker run --rm --gpus all -it -v ~/.cache/huggingface:/work/.hf-cache \
+    dnatok:dev bash
+```
+
+### Singularity / Apptainer (HPC)
+
+```bash
+# Convert from Docker
+apptainer build dnatok.sif docker-daemon://dnatok:dev
+
+# Or pull a published image
+apptainer pull dnatok.sif docker://ghcr.io/anu-dnatok/dnatok:latest
+
+# Use exactly like Docker — the `dnatok` CLI is on $PATH
+apptainer exec --nv -B ~/.cache/huggingface:/work/.hf-cache dnatok.sif \
+    dnatok demo --model arcinstitute/evo2_1b_base
+```
+
+The kernel JIT-compiles for the host's CUDA architecture on first use. We have validated **sm_80 (A100), sm_90 (H200), and sm_120 (GB10)** as part of the paper. V100 (sm_70) is excluded — NGC PyTorch 25.10/25.11 dropped sm_70 under CUDA 13.
+
+### Built-in smoke test
+
+`docker/smoke_test.sh` iterates over all 7 supported families inside the image and validates `info → encode → validate(n=100) → bench` for each. Exit code 0 ⇔ all 7 pass. See `docker/BUILD_AND_TEST.md` for the full Docker → Apptainer → Gadi workflow.
 
 ## Benchmarks
 
-### Running Benchmarks
+End-to-end tokenisation speedup vs HF native, measured across all 19 supported model variants × 8 realistic DNA workloads (Illumina/PacBio/Nanopore/gene-models/clinical-mix/GC-20/GC-65/poly-A) × 2 batch sizes on three HPC GPUs:
 
-#### Simple Benchmark (Mock Tokenizer)
-```bash
-python benchmarks/benchmark_ids_path_vs_tokenizer.py --kmer 1 --reps 3
-```
+| Model class | Examples | H200 (median) | A100 (median) | V100 (median) | V100 (max) |
+|---|---|---|---|---|---|
+| **LUT-char** (single-base & char-level) | Evo2, NTv3, HyenaDNA, Caduceus | **182×** | **212×** | **309×** | **794×** |
+| **LUT-kmer** | NTv2-50M, NTv2-500M | 44× | 59× | 53× | 122× |
+| **BPE** | DNABERT-2, GENA-LM, METAGENE-1 | **2.3–4.4×** | 1.05× | 1.01× | 1.29× |
 
-Output includes baseline comparison and speedup:
-```
-Config: standard (4096 x 512)
-  Baseline (HF)                   :    9,435,641 tok/s
-  DNATok (bytes path)             :  646,845,743 tok/s (68.55x speedup)
-```
+Headline pattern matches the paper's thesis: speedup grows monotonically as the field moves from BPE → k-mer → single-base tokenisation, and as the CPU baseline gets slower (V100 wins biggest in *relative* terms because its HF baseline is most starved). LUT-kmer ties HF on truly variable-length workloads (illumina_short, nanopore_long) and wins ~100× on fixed-length scenarios.
 
-#### Real Model Benchmarks
-```bash
-# Configure model paths
-export NT_MODEL_PATH=/path/to/nucleotide-transformer
-export HYENA_MODEL_PATH=/path/to/hyenadna
+Raw timing tables: [`results_hpc/realistic_{h200,a100,v100}/`](results_hpc/). Per-class summary: [`results_hpc/summaries/`](results_hpc/summaries/).
 
-# Run comprehensive benchmark
-python tests/benchmark_real_models.py
-```
+**Correctness:** 2,242 adversarial inputs (homopolymers up to 32 kbp, all-N, mixed case, CGTT counter-example, Unicode-edge, partial-tail k-mer) + 400 variable-length k-mer inputs + 8 variable-length single-base inputs — **bit-identical to Hugging Face on every supported model**.
 
-### Benchmark Scenarios
+Correctness: 2,242 adversarial inputs (homopolymers up to 32 kbp, all-N, mixed case, CGTT counter-example, Unicode-edge, partial-tail k-mer) + 400 variable-length k-mer inputs — **bit-identical to Hugging Face on every supported model**.
 
-- **Latency**: Single sequence (B=1), typical context length
-- **Throughput**: Large batch sizes (B=16-64)
-- **Long Sequence**: Extended contexts (T=4096-8192)
+## How it works
 
-Results saved to `results/` directory as CSV and JSON.
+DNAtok routes each tokenizer through one of three GPU fast paths:
 
----
+1. **Single-base / character LUT** (Evo2, NTv3, HyenaDNA, Caduceus).
+   ASCII byte → token ID via a 256-entry lookup table; vectorized over the whole batch.
 
-## API Reference
+2. **K-mer LUT** (NTv2). A precomputed table maps every `k`-character window to its token ID. Variable batch lengths are handled by per-length-group dispatch with the partial-tail extension.
 
-### DNATok Class
+3. **BPE Algorithm-1** (DNABERT-2, GENA-LM, METAGENE-1). An entry-pool bucket scheduler runs Hugging Face's reference Algorithm-1 on the GPU using a doubly-linked-list of live positions, CUB BlockMergeSort within each rank, and an optional speculative multi-rank inner loop (see Methods in the paper) for additional speedup on long reads. This GPU BPE kernel is the primary BPE path and runs 2.3–4.4× faster than Hugging Face Rust threaded on H200 with bit-identical output. A complementary cached safe-margin lookahead encoder is built alongside for non-SentencePiece BPE tokenisers (DNABERT-2, GENA-LM) and serves as a streaming-cache fallback for workloads with high corpus-level sequence repetition.
 
-```python
-class DNATok:
-    """GPU-accelerated DNA tokenization with automatic optimization."""
-    
-    def __init__(
-        self,
-        embedder: object,
-        ids_max_tokens_per_call: int = 4_194_304,
-        prefer_int32_h2d: bool = True,
-        overlap_h2d_compute: bool = True,
-        force_fp32_outputs: bool = True,
-        normalize_case: bool = False,
-        handle_invalid_chars: bool = False,
-        strict_lut_check: bool = True,
-        logger: Optional[logging.Logger] = None
-    )
-```
+All three paths produce token IDs **bit-identical** to Hugging Face's tokenizers reference (after stripping `id_pad`); the BPE path is validated against an adversarial 2,242-input gate.
 
-#### Key Methods
+## Reproducing the paper
 
-##### `discover() -> None`
-Analyzes tokenizer and builds optimization structures (LUTs, k-mer tables).
-
-##### `embed_from_strings(seqs, emb_batch, device, path="auto") -> Iterator[Tensor]`
-End-to-end tokenization and embedding.
-
-**Parameters:**
-- `seqs`: List of equal-length DNA sequences
-- `emb_batch`: Micro-batch size for embedding calls
-- `device`: Target device (`"cuda"`, `"cuda:0"`, `"cpu"`)
-- `path`: Encoding path (`"auto"`, `"bytes"`, `"ids"`)
-
-**Returns:** Iterator of embedding tensors (allows streaming large batches)
-
-##### `encode_batch_to_ids(seqs) -> Tensor`
-Tokenize sequences to token IDs (CPU).
-
-**Parameters:**
-- `seqs`: List of equal-length strings
-
-**Returns:** `[B, T]` tensor of token IDs
-
----
-
-## Testing
-
-### Run All Tests
+Each main figure has a single-command reproduction:
 
 ```bash
-pytest tests/ -v
+# Figure 2a — correctness gate
+docker run --rm --gpus all -v $HOME/.cache/huggingface:/work/.hf-cache dnatok:dev \
+    python3 -m pytest tests/test_gputok_bpe_backend.py -q
+
+# Figure 3 — cross-platform throughput
+docker run --rm --gpus all -v $HOME/.cache/huggingface:/work/.hf-cache \
+    -v $(pwd)/results:/work/results dnatok:dev \
+    bash benchmarks/run_realistic_benchmark.py --warmup 2 --iters 20
+
+# Figure 4 — biological case studies (Evo2 ClinVar, NTv3 chr21, DNABERT-2 ENCODE)
+for case in 01_evo2_clinvar_variants 02_ntv3_chr21_regulatory 03_dnabert2_encode_ctcf; do
+    docker run --rm --gpus all -v $HOME/.cache/huggingface:/work/.hf-cache \
+        -v $(pwd)/results:/work/results dnatok:dev \
+        python3 bio_examples/${case}/run.py
+done
 ```
 
-### Test Coverage
+Sample correctness output (each case study):
 
-- **Correctness**: DNATok vs baseline tokenizer equivalence
-- **Path Consistency**: Bytes path matches IDs path
-- **Fallback Behavior**: Graceful degradation on errors
-- **Edge Cases**: Mixed case, invalid chars, empty strings
-- **K-mer Handling**: K-mer detection and unsupported k-mer fallback
-
-### Specific Test Suites
-
-```bash
-# Benchmark correctness validation
-pytest tests/test_benchmark_correctness.py -v
-
-# IDs path equivalence
-pytest tests/test_ids_path_equivalence.py -v
-
-# Fallback behavior
-pytest tests/test_bytes_path_fallback.py -v
-pytest tests/test_kmer_bytes_fallback.py -v
+```
+============================================================
+Pipeline validation: NTv3-650M-131kb (chr21 long-context tiling)
+============================================================
+  inputs: n=20  lens(min/med/max)=(16384, 16384, 16384)
+  HF tokenize:        112.47 ms
+  DNAtok tokenize:      4.19 ms
+  speedup:             26.84x
+  correctness:     BIT-IDENTICAL
+============================================================
 ```
 
----
+## Documentation
 
-## Contributing
-
-We welcome contributions! Please follow these guidelines:
-
-### Code Standards
-
-- **Style**: Follow PEP 8 (use `black` for formatting)
-- **Testing**: Add tests for new features
-- **Documentation**: Update README and docstrings
-- **Type Hints**: Use type annotations where possible
-
-### Submitting Changes
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes and add tests
-4. Run tests: `pytest tests/ -v`
-5. Format code: `black src/ tests/`
-6. Commit changes (`git commit -m 'Add amazing feature'`)
-7. Push to branch (`git push origin feature/amazing-feature`)
-8. Open a Pull Request
-
----
+| Doc | What's in it |
+|---|---|
+| [`docs/CLI.md`](docs/CLI.md) | Full `dnatok` CLI reference — every sub-command + env vars |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How discover-then-execute routes each tokenizer; BPE dispatch details |
+| [`docker/BUILD_AND_TEST.md`](docker/BUILD_AND_TEST.md) | Docker → Apptainer .sif → Gadi end-to-end build/test workflow |
+| [`docker/smoke_test.sh`](docker/smoke_test.sh) | In-container test for all 7 supported families |
+| [`paper_content/`](paper_content/) | Paper drafts + supplementary notes (gitignored on public repo) |
 
 ## Citation
 
-If you use DNATok in your research, please cite:
+If you use DNAtok, please cite:
 
 ```bibtex
-@software{dnatokens2024,
-  title = {DNATok: High-Performance GPU-Accelerated DNA Tokenization},
-  author = {[Your Name/Team]},
-  year = {2024},
-  url = {https://github.com/yourusername/DNATok},
-  note = {Software for accelerated DNA sequence tokenization in genomic foundation models}
+@article{dnatok2026,
+  title  = {DNAtok: a GPU-native tokenizer for genomic foundation models},
+  author = {Niktab, M. and {DNAtok consortium}},
+  journal= {Nature Methods},
+  year   = {2026},
+  note   = {In submission}
 }
 ```
 
-### Related Work
+The Docker image and Apptainer `.sif` are mirrored to Zenodo for
+permanence (DOI to be added at publication).
 
-DNATok builds upon and supports research in genomic foundation models:
+## License
 
-- **Nucleotide Transformer**: Dalla-Torre et al. (2023) - [Paper](https://www.biorxiv.org/content/10.1101/2023.01.11.523679v1)
-- **HyenaDNA**: Nguyen et al. (2023) - [Paper](https://arxiv.org/abs/2306.15794)
-- **Evo**: Nguyen et al. (2024) - [Paper](https://www.biorxiv.org/content/10.1101/2024.02.27.582234v1)
+Apache 2.0 — see [LICENSE](LICENSE).
 
----
+## Acknowledgements
 
-## Troubleshooting
-
-### Common Issues
-
-#### "Sequence length not divisible by k"
-K-mer tokenizers require sequence length divisible by k. Pad or truncate sequences:
-```python
-k = dna_tok.kmer_k
-seq_len = (len(seq) // k) * k
-seq = seq[:seq_len]
-```
-
-#### "All sequences must have equal length"
-DNATok requires batch sequences to be equal length. Pre-pad to max length:
-```python
-max_len = max(len(s) for s in seqs)
-seqs = [s + 'N' * (max_len - len(s)) for s in seqs]
-```
-
-#### CUDA Out of Memory
-Reduce `emb_batch` size:
-```python
-# Instead of emb_batch=64
-embeddings = dna_tok.embed_from_strings(seqs, emb_batch=16, device="cuda")
-```
-
----
-
-## Roadmap
-
-- [ ] PyPI package distribution
-- [ ] Support for BPE tokenizers
-- [ ] Multi-GPU scaling
-- [ ] INT8/FP16 embedding optimization
-- [ ] Rust/C++ backend for CPU path
-- [ ] Support for variable-length batches
-
----
-
-
-
----
-
-## Contact
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/DNATok/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/DNATok/discussions)
-- **Email**: eli.niktab@anu.edu
+DNAtok's GPU BPE kernel re-uses the cuCollections and CCCL (CUB / Thrust / libcudacxx) header libraries vendored from the [gpu-tokenizer](https://github.com/gpu-tokenizer/gpu-tokenizer) project, both Apache 2.0. The cross-platform benchmarks ran on the Australian National Computational Infrastructure (NCI) Gadi cluster under project `te53`.

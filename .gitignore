@@ -217,4 +217,41 @@ benchmarks/hpc_model_config.local.yaml
 # Working artefacts — paper drafts + bench output stay local
 paper_content/
 results_hpc/
+results_local/
+results/
 .agents/
+docker/gpu-tokenizer-headers/
+coscientist_run/
+era_run/
+
+# Audit + plan files (working docs, not user-facing)
+AUDIT_NOTES.md
+AUDIT_2026_*.md
+AUDIT_TODO_*.md
+GADI_*.md
+MODELS_AUDIT.md
+DOCKER_PLUG_AND_PLAY_PLAN.md
+
+# HF cache (must NOT ship — large, contains licensed weights)
+.hf-cache/
+hf-cache/
+
+# Generated Apptainer image
+*.sif
+
+# Internal HPC orchestration — Gadi/NCI-specific scripts that are NOT
+# part of the public tool. Reproducibility ships through Docker.
+benchmarks/run_gadi.sh
+benchmarks/run_gadi_interactive.sh
+benchmarks/run_gadi_publication_bench.sh
+benchmarks/download_models_on_gadi.sh
+benchmarks/gadi_benchmark.pbs
+benchmarks/gadi-rapids-shell.sh
+benchmarks/hpc_model_config.gadi.yaml
+benchmarks/run_h200.sh
+benchmarks/run_hpc_automated.sh
+benchmarks/logs/
+bin/
+logs/
+.remember/
+.claude/

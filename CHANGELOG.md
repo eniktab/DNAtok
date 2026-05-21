@@ -41,5 +41,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful fallback to tokenizer on edge cases
 - Automatic LUT rebuild on tokenizer mismatch
 
-[Unreleased]: https://github.com/yourusername/DNATok/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/yourusername/DNATok/releases/tag/v0.1.0
+[Unreleased]: https://github.com/[org]/DNAtok/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/[org]/DNAtok/releases/tag/v0.1.0
